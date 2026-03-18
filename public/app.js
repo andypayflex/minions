@@ -8,6 +8,15 @@ const azureResult = document.querySelector("#azure-result");
 const refreshButton = document.querySelector("#refresh-button");
 const healthButton = document.querySelector("#show-health");
 const heroStats = document.querySelector("#hero-stats");
+const runtimeModeNote = document.querySelector("#runtime-mode-note");
+const TERMINAL_STATES = new Set(["successful", "partial", "failed", "blocked", "boundary-stopped", "interrupted"]);
+const pendingTaskRuns = new Set();
+const taskRunWatchers = new Map();
+const runPollers = new Map();
+let followedRunId = null;
+
+runtimeModeNote.textContent =
+  "Runtime mode: agent-runner execution with github-pr delivery, so successful runs can open a real GitHub pull request.";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -28,6 +37,113 @@ async function api(path, options = {}) {
 
 function showJson(target, payload) {
   target.textContent = JSON.stringify(payload, null, 2);
+}
+
+function showError(target, error) {
+  target.textContent = error instanceof Error ? error.message : String(error);
+}
+
+function stopTaskRunWatcher(taskId) {
+  const timeoutId = taskRunWatchers.get(taskId);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
+  taskRunWatchers.delete(taskId);
+}
+
+function stopRunPolling(runId) {
+  const timeoutId = runPollers.get(runId);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
+  runPollers.delete(runId);
+}
+
+function isRunTerminal(run) {
+  return Boolean(run?.progressState?.terminal) || TERMINAL_STATES.has(run?.currentOutcomeState);
+}
+
+function showRunProgress(run) {
+  const stage = run?.progressState?.currentStage || run?.currentStage || "unknown";
+  inspector.textContent = `Run ${run.id} is running in ${stage} stage.\nCurrent outcome: ${run.currentOutcomeState}.\nPolling live status...`;
+}
+
+async function pollRun(runId) {
+  try {
+    const payload = await api(`/api/runs/${runId}`);
+    const run = payload.run;
+
+    if (followedRunId === runId) {
+      if (isRunTerminal(run)) {
+        showJson(inspector, payload);
+      } else {
+        showRunProgress(run);
+      }
+    }
+
+    if (isRunTerminal(run)) {
+      stopRunPolling(runId);
+      await refreshDashboard();
+      return;
+    }
+  } catch (error) {
+    if (followedRunId === runId) {
+      showError(inspector, error);
+    }
+    stopRunPolling(runId);
+    return;
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    pollRun(runId).catch((error) => {
+      if (followedRunId === runId) {
+        showError(inspector, error);
+      }
+      stopRunPolling(runId);
+    });
+  }, 2000);
+  runPollers.set(runId, timeoutId);
+}
+
+function ensureRunPolling(runId) {
+  if (!runId || runPollers.has(runId)) {
+    return;
+  }
+
+  void pollRun(runId);
+}
+
+async function watchTaskForRun(taskId) {
+  try {
+    const payload = await api(`/api/tasks/${taskId}`);
+    const task = payload.task;
+
+    if (task.runId) {
+      pendingTaskRuns.delete(taskId);
+      stopTaskRunWatcher(taskId);
+      followedRunId = task.runId;
+      const runPayload = await api(`/api/runs/${task.runId}`);
+      if (isRunTerminal(runPayload.run)) {
+        showJson(inspector, runPayload);
+      } else {
+        showRunProgress(runPayload.run);
+        ensureRunPolling(task.runId);
+      }
+      await refreshDashboard();
+      return;
+    }
+  } catch (error) {
+    showError(inspector, error);
+    pendingTaskRuns.delete(taskId);
+    stopTaskRunWatcher(taskId);
+    await refreshDashboard();
+    return;
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    void watchTaskForRun(taskId);
+  }, 1200);
+  taskRunWatchers.set(taskId, timeoutId);
 }
 
 function card(title, meta, buttons = []) {
@@ -81,6 +197,11 @@ async function refreshDashboard() {
     api("/api/runs"),
     api("/api/repositories"),
   ]);
+  const activeRunIdsByTask = new Map(
+    runPayload.runs
+      .filter((run) => !TERMINAL_STATES.has(run.currentOutcomeState))
+      .map((run) => [run.taskRequestId, run.id]),
+  );
 
   heroStats.innerHTML = `
     <div class="stat"><strong>${taskPayload.tasks.length}</strong><span>Tasks</span></div>
@@ -102,13 +223,38 @@ async function refreshDashboard() {
 
   for (const task of taskPayload.tasks) {
     const inspect = actionButton("Inspect", async () => {
+      followedRunId = null;
       showJson(inspector, await api(`/api/tasks/${task.id}`));
     });
-    const run = actionButton("Run Full Flow", async () => {
-      const result = await api(`/api/tasks/${task.id}/run`, { method: "POST" });
-      showJson(inspector, result);
+    const activeRunId = activeRunIdsByTask.get(task.id);
+    const run = actionButton(activeRunId || pendingTaskRuns.has(task.id) ? "Run In Progress" : "Run Full Flow", async () => {
+      if (pendingTaskRuns.has(task.id) || activeRunIdsByTask.has(task.id)) {
+        return;
+      }
+
+      pendingTaskRuns.add(task.id);
+      inspector.textContent = `Starting full run for ${task.id}...\nWaiting for the server to create a run and enter the first active stage.`;
       await refreshDashboard();
+      void watchTaskForRun(task.id);
+
+      try {
+        const result = await api(`/api/tasks/${task.id}/run`, { method: "POST" });
+        pendingTaskRuns.delete(task.id);
+        stopTaskRunWatcher(task.id);
+        if (result.runId) {
+          followedRunId = result.runId;
+          stopRunPolling(result.runId);
+        }
+        showJson(inspector, result);
+        await refreshDashboard();
+      } catch (error) {
+        pendingTaskRuns.delete(task.id);
+        stopTaskRunWatcher(task.id);
+        showError(inspector, error);
+        await refreshDashboard();
+      }
     });
+    run.disabled = pendingTaskRuns.has(task.id) || Boolean(activeRunId);
     taskList.append(card(task.title, `${task.id} · ${task.status}`, [inspect, run]));
   }
 
@@ -125,24 +271,41 @@ async function refreshDashboard() {
   }
 
   for (const run of runPayload.runs) {
+    if (!TERMINAL_STATES.has(run.currentOutcomeState)) {
+      ensureRunPolling(run.id);
+    }
+
     const inspect = actionButton("Inspect", async () => {
+      followedRunId = null;
       showJson(inspector, await api(`/api/runs/${run.id}`));
     });
     const history = actionButton("History", async () => {
+      followedRunId = null;
       showJson(inspector, await api(`/api/runs/${run.id}/history`));
     });
     const status = actionButton("Status", async () => {
       try {
-        showJson(inspector, await api(`/api/runs/${run.id}/status`));
+        if (TERMINAL_STATES.has(run.currentOutcomeState)) {
+          followedRunId = null;
+          showJson(inspector, await api(`/api/runs/${run.id}/status`));
+          return;
+        }
+
+        followedRunId = run.id;
+        const payload = await api(`/api/runs/${run.id}`);
+        showRunProgress(payload.run);
+        ensureRunPolling(run.id);
       } catch (error) {
-        inspector.textContent = error.message;
+        showError(inspector, error);
       }
     }, "ghost");
     const structured = actionButton("Structured", async () => {
+      followedRunId = null;
       showJson(inspector, await api(`/api/runs/${run.id}/structured`));
     }, "ghost");
     const pause = actionButton("Pause", async () => {
       try {
+        followedRunId = null;
         showJson(
           inspector,
           await api(`/api/runs/${run.id}/operator-action`, {
@@ -152,7 +315,7 @@ async function refreshDashboard() {
         );
         await refreshDashboard();
       } catch (error) {
-        inspector.textContent = error.message;
+        showError(inspector, error);
       }
     }, "ghost");
 
@@ -211,9 +374,10 @@ azureForm.addEventListener("submit", async (event) => {
 
 refreshButton.addEventListener("click", refreshDashboard);
 healthButton.addEventListener("click", async () => {
+  followedRunId = null;
   showJson(inspector, await api("/api/health"));
 });
 
 refreshDashboard().catch((error) => {
-  inspector.textContent = error.message;
+  showError(inspector, error);
 });

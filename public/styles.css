@@ -184,6 +184,12 @@ button:hover {
   transform: translateY(-1px);
 }
 
+button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+  transform: none;
+}
+
 .ghost-button {
   background: transparent;
   color: var(--accent-deep);

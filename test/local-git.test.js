@@ -64,9 +64,27 @@ test("local git helpers create a branch and commit staged changes", async () => 
     assert.equal(status.clean, false);
     assert.equal(status.entries[0].path, "src/feature.js");
 
-    const commit = await createLocalDeliveryCommit(repositoryPath, "Minions: Update feature");
+    const commit = await createLocalDeliveryCommit(repositoryPath, "Minions: Update feature", ["src/feature.js"]);
     assert.match(commit.commitSha, /^[0-9a-f]{40}$/);
     assert.deepEqual(commit.stagedFiles, ["src/feature.js"]);
+  } finally {
+    await fs.rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("local git helper stages only delivery-scoped files", async () => {
+  const repositoryPath = await createTempGitRepo();
+
+  try {
+    await createLocalDeliveryBranch(repositoryPath, "minions/task-0002");
+    await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+    await fs.writeFile(path.join(repositoryPath, "package.json"), '{"name":"github-pr-target","private":true}\n');
+
+    const commit = await createLocalDeliveryCommit(repositoryPath, "Minions: Scoped commit", ["src/feature.js"]);
+    assert.deepEqual(commit.stagedFiles, ["src/feature.js"]);
+
+    const status = await readWorkingTreeStatus(repositoryPath);
+    assert.equal(status.entries.some((entry) => entry.path === "package.json"), true);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }
@@ -164,6 +182,83 @@ test("platform local-git delivery creates a real branch and commit for a complet
     assert.equal(pullRequest.pullRequest.mode, "local-git");
     assert.match(pullRequest.pullRequest.commitSha, /^[0-9a-f]{40}$/);
     assert.deepEqual(pullRequest.pullRequest.stagedFiles, ["src/feature.js"]);
+
+    platform._markRunDeliveredSuccessfully(platform.runs.get(runId));
+    assert.equal(platform.runs.get(runId).currentOutcomeState, "successful");
+    assert.equal(platform.runs.get(runId).progressState.currentStage, "delivery");
+    assert.equal(platform.tasks.get(taskId).status, "delivery-complete");
+  } finally {
+    await fs.rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("runAutonomousFlow recovers timed-out agent execution from worktree changes and still delivers locally", async () => {
+  const repositoryPath = await createTempGitRepo();
+
+  try {
+    const platform = new MinionsPlatform({
+      executionTimeoutMs: 25,
+      executionRunner: {
+        async analyze() {
+          return {
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            final: {
+              taskType: "code-change",
+              shouldProceed: true,
+              summary: "Update the feature with a small UI-facing refinement.",
+              reasoning: "The task is narrow and should stay within src/feature.js.",
+              relevantFiles: ["src/feature.js"],
+              testFiles: [],
+              notes: [],
+            },
+          };
+        },
+        async run() {
+          await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+          return new Promise(() => {});
+        },
+      },
+    });
+
+    platform.onboardSupportedTarget({
+      repositoryId: "repo/local-git-target",
+      teamId: "team-core",
+      repositoryPath,
+      executionMode: "agent-runner",
+      deliveryMode: "local-git",
+      metadata: {
+        language: "javascript",
+        defaultBranch: "main",
+      },
+    });
+
+    const taskId = platform.submitTaskRequest(
+      {
+        title: "Update the feature implementation",
+        objective: "Change the local repo feature and prepare delivery output",
+        repository: "repo/local-git-target",
+        constraints: ["keep it deterministic", "add tests if needed"],
+        expectedOutcome: "working branch and commit",
+        linkedItems: [],
+        requestedActions: ["modify-code", "create-tests"],
+      },
+      {
+        requesterIdentity: "engineer:aiden",
+        entryPoint: "slack/minions",
+      },
+    ).taskRequestId;
+
+    const result = await platform.runAutonomousFlow(taskId);
+    assert.equal(result.ok, true);
+
+    const run = platform.runs.get(result.runId);
+    assert.equal(run.execution.agentRun.recoveredFromWorktree, true);
+    assert.deepEqual(run.execution.currentWorkState.changedFiles, ["src/feature.js"]);
+    assert.equal(run.delivery.pullRequest.mode, "local-git");
+    assert.match(run.delivery.pullRequest.commitSha, /^[0-9a-f]{40}$/);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }

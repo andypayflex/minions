@@ -15,6 +15,7 @@
         <p class="lede">
           Submit a task, import an Azure work item, launch a full autonomous run, and inspect the resulting execution, validation, and delivery artifacts through the live API.
         </p>
+        <p id="runtime-mode-note" class="caption"></p>
         <div class="hero-stats" id="hero-stats"></div>
       </section>
 
@@ -27,21 +28,21 @@
           <form id="task-form">
             <label>
               <span>Title</span>
-              <input name="title" value="Add scoped task intake" required />
+              <input name="title" value="Improve the empty states for tasks and runs" required />
             </label>
             <label>
               <span>Objective</span>
-              <textarea name="objective" rows="3" required>Implement the first Minions intake path and preserve validation evidence for downstream delivery.</textarea>
+              <textarea name="objective" rows="3" required>Make the dashboard feel more intentional when there are no tasks or runs by replacing the plain empty-state text with clearer guidance and a better visual treatment.</textarea>
             </label>
             <label>
               <span>Constraints</span>
-              <textarea name="constraints" rows="3">preserve deterministic rules
-add tests
-keep operator visibility</textarea>
+              <textarea name="constraints" rows="3">keep the change small
+prefer touching only public/app.js and public/styles.css
+do not change API routes or server behavior</textarea>
             </label>
             <label>
               <span>Expected Outcome</span>
-              <input name="expectedOutcome" value="working code with tests and PR summary" required />
+              <input name="expectedOutcome" value="the UI shows more polished empty states and the run produces a real GitHub PR" required />
             </label>
             <label>
               <span>Repository</span>
