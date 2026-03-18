@@ -58,6 +58,23 @@ function actionButton(label, handler, kind = "default") {
   return button;
 }
 
+function emptyState(eyebrow, title, message, hint) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "empty-state";
+  wrapper.innerHTML = `
+    <div class="empty-state-mark" aria-hidden="true">
+      <span></span>
+    </div>
+    <div class="empty-state-copy">
+      <p class="empty-state-eyebrow">${eyebrow}</p>
+      <h3>${title}</h3>
+      <p>${message}</p>
+      <p class="empty-state-hint">${hint}</p>
+    </div>
+  `;
+  return wrapper;
+}
+
 async function refreshDashboard() {
   const [taskPayload, runPayload, repositoryPayload] = await Promise.all([
     api("/api/tasks"),
@@ -73,7 +90,14 @@ async function refreshDashboard() {
 
   taskList.replaceChildren();
   if (taskPayload.tasks.length === 0) {
-    taskList.textContent = "No tasks yet.";
+    taskList.append(
+      emptyState(
+        "Ready To Start",
+        "No tasks in the queue",
+        "Create a task from the form above to define the objective, constraints, and expected outcome for the next delivery run.",
+        "A saved task becomes the launch point for the full autonomous flow.",
+      ),
+    );
   }
 
   for (const task of taskPayload.tasks) {
@@ -90,7 +114,14 @@ async function refreshDashboard() {
 
   runList.replaceChildren();
   if (runPayload.runs.length === 0) {
-    runList.textContent = "No runs yet.";
+    runList.append(
+      emptyState(
+        "Waiting On Launch",
+        "No runs have started",
+        "Launch a task to generate a live run with execution history, validation evidence, and delivery details.",
+        "Run records will appear here as soon as a task enters the flow.",
+      ),
+    );
   }
 
   for (const run of runPayload.runs) {
