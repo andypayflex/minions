@@ -1,0 +1,2 @@
+Minions server running on http://127.0.0.1:3210
+Runtime modes: execution=agent-runner orchestration=gsd-team delivery=github-pr
