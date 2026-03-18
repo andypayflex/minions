@@ -1381,7 +1381,7 @@ export class MinionsPlatform {
     run.effectiveRepositoryPath = target?.repositoryPath || null;
 
     if (target?.deliveryMode === "github-pr" && target?.repositoryPath) {
-      const preflight = await this.githubPrPreflight.checkRunStart(target.repositoryPath, { requireCleanWorktree: true });
+      const preflight = await this.githubPrPreflight.checkRunStart(target.repositoryPath);
       this._recordLedger(run, "github-pr-preflight-run-start-checked", preflight, preflight.ok ? "autonomous" : "blocked");
 
       if (!preflight.ok) {

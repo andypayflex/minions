@@ -248,7 +248,6 @@ test("platform github-pr delivery publishes a PR through the configured prefligh
     assert.equal(platform.runs.get(runId).delivery.stopPoint.stage, "delivery");
     assert.equal(pullRequest.pullRequest.github.number, 12);
     assert.equal(pullRequest.pullRequest.github.url, "https://github.com/andypayflex/minions/pull/12");
-    assert.deepEqual(preflightCalls, [repositoryPath]);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }

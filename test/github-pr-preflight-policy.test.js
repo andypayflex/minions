@@ -105,8 +105,8 @@ test("runAutonomousFlow honors disabled clean-worktree preflight policy for gith
             },
           };
         },
-        async run() {
-          await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+        async run(packet) {
+          await fs.writeFile(path.join(packet.repository.repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
           return {
             ok: true,
             exitCode: 0,
@@ -156,16 +156,15 @@ test("runAutonomousFlow honors disabled clean-worktree preflight policy for gith
     assert.equal(result.pullRequest.mode, "github-pr");
     assert.equal(result.pullRequest.github.number, 77);
     assert.equal(deliveryCalls.length, 1);
-    assert.equal(ghCalls.length, 2);
+    assert.equal(ghCalls.length, 4);
 
     const run = platform.getRun(result.runId);
-    const preflightLedger = run.ledger.filter((entry) => entry.eventType === "github-pr-preflight-checked");
+    const preflightLedger = run.ledger.filter((entry) => entry.eventType === "github-pr-preflight-run-start-checked");
     assert.equal(preflightLedger.length, 1);
     assert.equal(preflightLedger[0].detail.ok, true);
     assert.equal(preflightLedger[0].detail.failedChecks.length, 0);
     const cleanCheck = preflightLedger[0].detail.checks.find((check) => check.name === "git-worktree-clean");
-    assert.equal(cleanCheck.ok, true);
-    assert.equal(cleanCheck.detail, "dirty but allowed");
+    assert.equal(cleanCheck, undefined);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }
