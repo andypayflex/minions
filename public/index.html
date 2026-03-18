@@ -9,14 +9,18 @@
   <body>
     <div class="backdrop"></div>
     <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">Autonomous Delivery Prototype</p>
-        <h1>Minions Control Room</h1>
-        <p class="lede">
-          Submit a task, import an Azure work item, launch a full autonomous run, and inspect the resulting execution, validation, and delivery artifacts through the live API.
-        </p>
-        <p id="runtime-mode-note" class="caption"></p>
-        <div class="hero-stats" id="hero-stats"></div>
+      <section class="hero hero-compact">
+        <div class="hero-copy">
+          <p class="eyebrow">Autonomous Delivery Prototype</p>
+          <h1>Minions Control Room</h1>
+          <p class="lede">
+            Move from task intake to autonomous execution, monitor live runs, and keep the inspector focused on the details that matter.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <p id="runtime-mode-note" class="caption"></p>
+          <div class="hero-stats" id="hero-stats"></div>
+        </div>
       </section>
 
       <section class="grid">
@@ -53,60 +57,111 @@ produce the smallest safe GitHub PR that proves the end-to-end flow works</texta
             <div class="form-actions">
               <button type="submit">Create Task</button>
             </div>
-          </form>
-          <pre id="submission-result" class="code-block muted">No task submitted yet.</pre>
-        </article>
-
-        <article class="panel form-panel">
-          <div class="panel-head">
-            <h2>Import Azure Ticket</h2>
-            <span class="caption">Requires Azure DevOps env config on the server.</span>
-          </div>
-          <form id="azure-form">
-            <label>
-              <span>Work Item ID</span>
-              <input name="workItemId" placeholder="12345" required />
-            </label>
-            <label>
-              <span>Repository Override</span>
-              <input name="repository" value="repo/minions-app" />
-            </label>
-            <div class="form-actions">
-              <button type="submit">Import From Azure</button>
+            <div class="detail-actions">
+              <button id="show-health" class="ghost-button">Health</button>
             </div>
-          </form>
-          <pre id="azure-result" class="code-block muted">No Azure work item imported yet.</pre>
-        </article>
+            <div id="inspector" class="result-panel result-panel-primary">Select an action to inspect live API output.</div>
+          </article>
 
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Tasks</h2>
-            <span class="caption">Use a task row to launch a full autonomous run.</span>
-          </div>
-          <div id="task-list" class="stack"></div>
-        </article>
+          <section class="monitoring-grid">
+            <article class="panel monitoring-panel">
+              <div class="panel-head panel-head-tight">
+                <div>
+                  <p class="section-kicker">Monitor</p>
+                  <h2>Tasks</h2>
+                </div>
+                <span class="caption">Inspect a task or launch the full autonomous flow.</span>
+              </div>
+              <div id="task-list" class="stack"></div>
+            </article>
 
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Runs</h2>
-            <span class="caption">Inspect live status, completed history, and operator actions.</span>
-          </div>
-          <div id="run-list" class="stack"></div>
-        </article>
+            <article class="panel monitoring-panel">
+              <div class="panel-head panel-head-tight">
+                <div>
+                  <p class="section-kicker">Monitor</p>
+                  <h2>Runs</h2>
+                </div>
+                <span class="caption">Track live status, history, structured output, and operator actions.</span>
+              </div>
+              <div id="run-list" class="stack"></div>
+            </article>
+          </section>
+        </div>
 
-        <article class="panel detail-panel">
-          <div class="panel-head">
-            <h2>Inspector</h2>
-            <span class="caption">API responses land here.</span>
-          </div>
-          <div class="detail-actions">
-            <button id="show-health">Health</button>
-          </div>
-          <pre id="inspector" class="code-block">Select an action to inspect live API output.</pre>
-        </article>
+        <aside class="workflow-sidebar">
+          <article class="panel intake-panel intake-panel-primary">
+            <div class="panel-head panel-head-tight">
+              <div>
+                <p class="section-kicker">Task Intake</p>
+                <h2>Create Task</h2>
+              </div>
+              <button id="refresh-button" class="ghost-button">Refresh</button>
+            </div>
+            <p class="panel-intro">
+              Start the primary workflow here by capturing a crisp task brief for the run queue.
+            </p>
+            <form id="task-form">
+              <label>
+                <span>Title</span>
+                <input name="title" value="Improve the empty states for tasks and runs" required />
+              </label>
+              <label>
+                <span>Objective</span>
+                <textarea name="objective" rows="3" required>Make the dashboard feel more intentional when there are no tasks or runs by replacing the plain empty-state text with clearer guidance and a better visual treatment.</textarea>
+              </label>
+              <label>
+                <span>Constraints</span>
+                <textarea name="constraints" rows="3">keep the change small
+prefer touching only public/app.js and public/styles.css
+do not change API routes or server behavior</textarea>
+              </label>
+              <label>
+                <span>Expected Outcome</span>
+                <input name="expectedOutcome" value="the UI shows more polished empty states and the run produces a real GitHub PR" required />
+              </label>
+              <label>
+                <span>Repository</span>
+                <select name="repository">
+                  <option value="repo/minions-app">repo/minions-app</option>
+                </select>
+              </label>
+              <div class="form-actions">
+                <button type="submit">Create Task</button>
+              </div>
+            </form>
+            <div id="submission-result" class="result-panel muted">No task submitted yet.</div>
+          </article>
+
+          <article class="panel intake-panel intake-panel-secondary">
+            <div class="panel-head panel-head-tight">
+              <div>
+                <p class="section-kicker">Secondary Intake</p>
+                <h2>Import Azure Ticket</h2>
+              </div>
+              <span class="caption">Optional path. Requires Azure DevOps env config on the server.</span>
+            </div>
+            <p class="panel-intro panel-intro-secondary">
+              Use this when work starts in Azure DevOps and needs to be converted into a Minions task.
+            </p>
+            <form id="azure-form">
+              <label>
+                <span>Work Item ID</span>
+                <input name="workItemId" placeholder="12345" required />
+              </label>
+              <label>
+                <span>Repository Override</span>
+                <input name="repository" value="repo/minions-app" />
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="ghost-button">Import From Azure</button>
+              </div>
+            </form>
+            <div id="azure-result" class="result-panel muted">No Azure work item imported yet.</div>
+          </article>
+        </aside>
       </section>
     </main>
 
     <script type="module" src="/app.js"></script>
   </body>
-  </html>
+</html>

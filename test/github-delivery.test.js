@@ -172,8 +172,9 @@ test("GitHubCliDeliveryRunner pushes the branch and captures the created PR meta
   );
 });
 
-test("platform github-pr delivery publishes a PR through the configured runner", async () => {
+test("platform github-pr delivery publishes a PR through the configured preflight runner", async () => {
   const repositoryPath = await createTempGitRepo();
+  const preflightCalls = [];
 
   try {
     const preflightCalls = [];
@@ -247,6 +248,7 @@ test("platform github-pr delivery publishes a PR through the configured runner",
     assert.equal(platform.runs.get(runId).delivery.stopPoint.stage, "delivery");
     assert.equal(pullRequest.pullRequest.github.number, 12);
     assert.equal(pullRequest.pullRequest.github.url, "https://github.com/andypayflex/minions/pull/12");
+    assert.deepEqual(preflightCalls, [repositoryPath]);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }
