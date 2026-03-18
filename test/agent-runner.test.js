@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildAnalysisPrompt, buildExecutionPrompt, PiRpcRunner } from "../src/agent-runner.js";
+import { buildAnalysisPrompt, buildExecutionPrompt, createExecutionRunnerFromEnv, PiRpcRunner } from "../src/agent-runner.js";
 import { MinionsPlatform } from "../src/minions.js";
 
 function createRpcSpawn({ assistantText, exitCode = 0 }) {
@@ -234,6 +234,21 @@ test("PiRpcRunner analyze executes pi RPC and parses structured output", async (
   assert.match(result.prompt, /Document workflow/);
 });
 
+test("createExecutionRunnerFromEnv ignores unsupported codex provider while preserving model", () => {
+  const runner = createExecutionRunnerFromEnv({
+    executionMode: "agent-runner",
+    provider: "codex",
+    model: "gpt-5",
+    env: process.env,
+  });
+
+  assert.equal(runner.provider, null);
+  assert.equal(runner.model, "gpt-5");
+  assert.equal(runner.modelProvider, null);
+  assert.equal(runner._buildArgs({}).includes("--provider"), false);
+  assert.equal(runner._buildArgs({}).includes("--model"), true);
+});
+
 test("PiRpcRunner falls back to failed result when tagged JSON is missing", async () => {
   const runner = new PiRpcRunner({
     spawnImpl: createRpcSpawn({ assistantText: "Plain assistant text without final contract." }),
@@ -291,7 +306,7 @@ test("platform uses execution runner when repository target is configured for ag
             final: {
               outcome: "completed",
               summary: "Updated feature implementation.",
-              changedFiles: ["src/feature.js"],
+              changedFiles: ["src/feature.js", ".tmp/minions-e2e.log"],
               commandsRun: ["npm test"],
               notes: ["Executed in pi rpc runner"],
             },
@@ -351,7 +366,7 @@ test("platform uses execution runner when repository target is configured for ag
     assert.equal(platform.buildWorkingContext(taskId).ok, true);
     assert.equal(platform.identifyRelevantChangeSurface(taskId).ok, true);
     assert.equal(platform.evaluateCriticalContext(taskId).result, "ready");
-    const startup = platform.startIsolatedRunEnvironment(taskId);
+    const startup = await platform.startIsolatedRunEnvironment(taskId);
     const execution = await platform.executeRepositoryChangesAsync(startup.runId);
 
     assert.equal(execution.ok, true);

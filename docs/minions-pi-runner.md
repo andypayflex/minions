@@ -10,7 +10,7 @@ Use these environment variables to configure runtime:
 - `MINIONS_EXECUTION_MODE` — `simulated` or `agent-runner`.
 - `MINIONS_ORCHESTRATION_MODE` — `single-runner` or `gsd-team`.
 - `MINIONS_PI_COMMAND` — Pi CLI command to spawn. Defaults to `pi`.
-- `MINIONS_PI_PROVIDER` — optional Pi provider name passed to `pi --mode rpc --provider`.
+- `MINIONS_PI_PROVIDER` — optional Pi provider name passed to `pi --mode rpc --provider`. Unsupported or ambiguous values like `codex` are ignored rather than forwarded to Pi.
 - `MINIONS_PI_MODEL` — optional model id/pattern passed to `pi --mode rpc --model`.
 - `MINIONS_PI_SESSION_DIR` — optional Pi session directory.
 - `MINIONS_PI_ARGS` — optional extra CLI args, space-separated.

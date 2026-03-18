@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GitHubPrPreflight } from "../src/preflight.js";
+import { createGitHubPrPreflightFromEnv, GitHubPrPreflight } from "../src/preflight.js";
 
 function createExec(results = {}) {
   return async (command, args) => {
@@ -47,6 +47,16 @@ test("GitHubPrPreflight fails when gh auth is missing", async () => {
   const result = await preflight.check(process.cwd());
   assert.equal(result.ok, false);
   assert.equal(result.failedChecks.includes("gh-authenticated"), true);
+});
+
+test("createGitHubPrPreflightFromEnv requires clean worktree by default and allows explicit disable", () => {
+  const requiredByDefault = createGitHubPrPreflightFromEnv({ env: {} });
+  assert.equal(requiredByDefault.requireCleanWorktree, true);
+
+  const disabled = createGitHubPrPreflightFromEnv({
+    env: { MINIONS_GITHUB_PR_REQUIRE_CLEAN_WORKTREE: "false" },
+  });
+  assert.equal(disabled.requireCleanWorktree, false);
 });
 
 test("GitHubPrPreflight enforces clean worktree only when configured", async () => {

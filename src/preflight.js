@@ -28,7 +28,7 @@ export class GitHubPrPreflight {
     this.ghCommand = options.ghCommand || "gh";
     this.gitCommand = options.gitCommand || "git";
     this.env = options.env || process.env;
-    this.requireCleanWorktree = options.requireCleanWorktree ?? false;
+    this.requireCleanWorktree = options.requireCleanWorktree ?? true;
   }
 
   async check(repositoryPath) {
@@ -90,13 +90,15 @@ export class GitHubPrPreflight {
 }
 
 export function createGitHubPrPreflightFromEnv(overrides = {}) {
+  const env = overrides.env || process.env;
+  const configured = String(env.MINIONS_GITHUB_PR_REQUIRE_CLEAN_WORKTREE || "").toLowerCase();
+  const requireCleanWorktreeFromEnv = configured === "" ? true : !["0", "false", "no"].includes(configured);
+
   return new GitHubPrPreflight({
     exec: overrides.exec,
-    ghCommand: overrides.ghCommand || process.env.MINIONS_GH_COMMAND || "gh",
-    gitCommand: overrides.gitCommand || process.env.MINIONS_GIT_COMMAND || "git",
+    ghCommand: overrides.ghCommand || env.MINIONS_GH_COMMAND || "gh",
+    gitCommand: overrides.gitCommand || env.MINIONS_GIT_COMMAND || "git",
     env: overrides.env,
-    requireCleanWorktree:
-      overrides.requireCleanWorktree ??
-      ["1", "true", "yes"].includes(String(process.env.MINIONS_GITHUB_PR_REQUIRE_CLEAN_WORKTREE || "").toLowerCase()),
+    requireCleanWorktree: overrides.requireCleanWorktree ?? requireCleanWorktreeFromEnv,
   });
 }

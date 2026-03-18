@@ -192,7 +192,7 @@ test("platform github-pr delivery publishes a PR through the configured runner",
     assert.equal(platform.identifyRelevantChangeSurface(taskId).ok, true);
     assert.equal(platform.evaluateCriticalContext(taskId).result, "ready");
 
-    const startup = platform.startIsolatedRunEnvironment(taskId);
+    const startup = await platform.startIsolatedRunEnvironment(taskId);
     const runId = startup.runId;
     await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
     assert.equal(

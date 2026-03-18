@@ -99,10 +99,10 @@ function prepareTaskForExecution(platform, taskId) {
   return platform.tasks.get(taskId).runId;
 }
 
-function createSuccessfulRun(platform) {
+async function createSuccessfulRun(platform) {
   const taskId = submitScopedTask(platform);
   const runId = prepareTaskForExecution(platform, taskId);
-  assert.equal(platform.startIsolatedRunEnvironment(taskId).ok, true);
+  assert.equal((await platform.startIsolatedRunEnvironment(taskId)).ok, true);
   assert.equal(platform.executeRepositoryChanges(runId).ok, true);
   assert.equal(platform.runRepositoryValidation(runId).ok, true);
   assert.equal(platform.captureStructuredValidationEvidence(runId).ok, true);
@@ -266,11 +266,11 @@ test("Stories 2.1 through 2.5 build preparation state and block missing or confl
   assert.equal(blocked.result, "blocked-conflicting-context");
 });
 
-test("Stories 3.1 through 3.4 start runs, persist progress, capture write failures, and stop at runtime boundaries", () => {
+test("Stories 3.1 through 3.4 start runs, persist progress, capture write failures, and stop at runtime boundaries", async () => {
   const platform = buildPlatform();
   const taskId = submitScopedTask(platform);
   const runId = prepareTaskForExecution(platform, taskId);
-  assert.equal(platform.startIsolatedRunEnvironment(taskId).ok, true);
+  assert.equal((await platform.startIsolatedRunEnvironment(taskId)).ok, true);
   assert.equal(platform.executeRepositoryChanges(runId).ok, true);
 
   const run = platform.runs.get(runId);
@@ -288,7 +288,7 @@ test("Stories 3.1 through 3.4 start runs, persist progress, capture write failur
   const failingPlatform = buildPlatform();
   const failingTaskId = submitScopedTask(failingPlatform);
   const failingRunId = prepareTaskForExecution(failingPlatform, failingTaskId);
-  failingPlatform.startIsolatedRunEnvironment(failingTaskId);
+  await failingPlatform.startIsolatedRunEnvironment(failingTaskId);
   const writeFailure = failingPlatform.executeRepositoryChanges(failingRunId, {
     forceWriteFailure: "filesystem write denied",
   });
@@ -296,11 +296,11 @@ test("Stories 3.1 through 3.4 start runs, persist progress, capture write failur
   assert.equal(failingPlatform.runs.get(failingRunId).failureReason, "filesystem write denied");
 });
 
-test("Stories 3.5 and 3.6 expose in-progress status with redaction and bounded operator access", () => {
+test("Stories 3.5 and 3.6 expose in-progress status with redaction and bounded operator access", async () => {
   const platform = buildPlatform();
   const taskId = submitScopedTask(platform);
   const runId = prepareTaskForExecution(platform, taskId);
-  platform.startIsolatedRunEnvironment(taskId);
+  await platform.startIsolatedRunEnvironment(taskId);
   platform.executeRepositoryChanges(runId);
 
   const status = platform.getInProgressStatus(runId, { role: "engineer" });
@@ -319,9 +319,9 @@ test("Stories 3.5 and 3.6 expose in-progress status with redaction and bounded o
   assert.equal(blockedAction.ok, false);
 });
 
-test("Stories 4.1 through 4.6 validate runs, capture evidence, determine completion, publish delivery artifacts, and preserve gate history", () => {
+test("Stories 4.1 through 4.6 validate runs, capture evidence, determine completion, publish delivery artifacts, and preserve gate history", async () => {
   const platform = buildPlatform();
-  const { runId, taskId } = createSuccessfulRun(platform);
+  const { runId, taskId } = await createSuccessfulRun(platform);
   const run = platform.runs.get(runId);
 
   assert.equal(run.validation.completionState, "completed");
@@ -335,7 +335,7 @@ test("Stories 4.1 through 4.6 validate runs, capture evidence, determine complet
   const partialPlatform = buildPlatform();
   const partialTaskId = submitScopedTask(partialPlatform);
   const partialRunId = prepareTaskForExecution(partialPlatform, partialTaskId);
-  partialPlatform.startIsolatedRunEnvironment(partialTaskId);
+  await partialPlatform.startIsolatedRunEnvironment(partialTaskId);
   partialPlatform.executeRepositoryChanges(partialRunId);
   partialPlatform.runRepositoryValidation(partialRunId, {
     steps: [{ id: "unit-tests", malformed: true, rawOutput: "???" }],
@@ -351,7 +351,7 @@ test("runAutonomousFlow blocks duplicate active runs and completed delivery reru
   const platform = buildPlatform();
   const taskId = submitScopedTask(platform);
   const runId = prepareTaskForExecution(platform, taskId);
-  platform.startIsolatedRunEnvironment(taskId);
+  await platform.startIsolatedRunEnvironment(taskId);
   platform.executeRepositoryChanges(runId);
 
   const duplicateActive = await platform.runAutonomousFlow(taskId);
@@ -360,7 +360,7 @@ test("runAutonomousFlow blocks duplicate active runs and completed delivery reru
   assert.equal(duplicateActive.runId, runId);
 
   const deliveredPlatform = buildPlatform();
-  const delivered = createSuccessfulRun(deliveredPlatform);
+  const delivered = await createSuccessfulRun(deliveredPlatform);
   deliveredPlatform._markRunDeliveredSuccessfully(deliveredPlatform.runs.get(delivered.runId));
 
   const duplicateDelivered = await deliveredPlatform.runAutonomousFlow(delivered.taskId);
@@ -370,11 +370,11 @@ test("runAutonomousFlow blocks duplicate active runs and completed delivery reru
   assert.equal(deliveredPlatform.runs.get(delivered.runId).currentOutcomeState, "successful");
 });
 
-test("Stories 5.1 through 5.3 classify failures, summarize them safely, and preserve intermediate state", () => {
+test("Stories 5.1 through 5.3 classify failures, summarize them safely, and preserve intermediate state", async () => {
   const platform = buildPlatform();
   const taskId = submitScopedTask(platform);
   const runId = prepareTaskForExecution(platform, taskId);
-  platform.startIsolatedRunEnvironment(taskId);
+  await platform.startIsolatedRunEnvironment(taskId);
   platform.executeRepositoryChanges(runId);
   platform.runRepositoryValidation(runId, {
     steps: [{ id: "unit-tests", status: "failed", output: "1 failing" }],
@@ -395,9 +395,9 @@ test("Stories 5.1 through 5.3 classify failures, summarize them safely, and pres
   assert.equal(preserved.failures.length, 1);
 });
 
-test("Stories 5.4 through 5.6 expose history, diagnostics, and a reconstructable run ledger", () => {
+test("Stories 5.4 through 5.6 expose history, diagnostics, and a reconstructable run ledger", async () => {
   const platform = buildPlatform();
-  const { runId } = createSuccessfulRun(platform);
+  const { runId } = await createSuccessfulRun(platform);
 
   const history = platform.getCompletedRunHistory(runId, { role: "engineer" });
   assert.equal(history.ok, true);
@@ -407,7 +407,7 @@ test("Stories 5.4 through 5.6 expose history, diagnostics, and a reconstructable
   const failingPlatform = buildPlatform();
   const taskId = submitScopedTask(failingPlatform);
   const failingRunId = prepareTaskForExecution(failingPlatform, taskId);
-  failingPlatform.startIsolatedRunEnvironment(taskId);
+  await failingPlatform.startIsolatedRunEnvironment(taskId);
   failingPlatform.executeRepositoryChanges(failingRunId);
   failingPlatform.runRepositoryValidation(failingRunId, {
     steps: [{ id: "unit-tests", status: "failed", output: "1 failing" }],
@@ -426,7 +426,7 @@ test("Stories 5.4 through 5.6 expose history, diagnostics, and a reconstructable
   assert.equal(ledger.autonomySummary.some((entry) => entry.autonomyClass === "blocked"), true);
 });
 
-test("Stories 6.1 through 6.4 register capabilities, onboard targets, expose structured run data, and extend workflow stages additively", () => {
+test("Stories 6.1 through 6.4 register capabilities, onboard targets, expose structured run data, and extend workflow stages additively", async () => {
   const platform = buildPlatform();
   const registration = platform.registerMinionType({
     id: "qa-helper",
@@ -460,7 +460,7 @@ test("Stories 6.1 through 6.4 register capabilities, onboard targets, expose str
   });
   assert.equal(invalidOnboarding.ok, false);
 
-  const { runId } = createSuccessfulRun(platform);
+  const { runId } = await createSuccessfulRun(platform);
   const structured = platform.getStructuredRunData(runId, { role: "internal-consumer" });
   assert.equal(structured.ok, true);
   assert.equal(structured.data.canonicalRunRecord, runId);

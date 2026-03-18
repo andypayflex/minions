@@ -153,7 +153,7 @@ test("platform local-git delivery creates a real branch and commit for a complet
     assert.equal(platform.identifyRelevantChangeSurface(taskId).ok, true);
     assert.equal(platform.evaluateCriticalContext(taskId).result, "ready");
 
-    const startup = platform.startIsolatedRunEnvironment(taskId);
+    const startup = await platform.startIsolatedRunEnvironment(taskId);
     const runId = startup.runId;
     await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
     assert.equal(
@@ -192,10 +192,13 @@ test("platform local-git delivery creates a real branch and commit for a complet
   }
 });
 
-test("runAutonomousFlow recovers timed-out agent execution from worktree changes and still delivers locally", async () => {
+test("runAutonomousFlow recovers timed-out agent execution from baseline delta and ignores runtime artifacts", async () => {
   const repositoryPath = await createTempGitRepo();
 
   try {
+    await fs.mkdir(path.join(repositoryPath, ".tmp"), { recursive: true });
+    await fs.writeFile(path.join(repositoryPath, "package.json"), '{"name":"preexisting-dirty"}\n');
+
     const platform = new MinionsPlatform({
       executionTimeoutMs: 25,
       executionRunner: {
@@ -218,6 +221,7 @@ test("runAutonomousFlow recovers timed-out agent execution from worktree changes
         },
         async run() {
           await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+          await fs.writeFile(path.join(repositoryPath, ".tmp", "minions-e2e.log"), "runtime log\n");
           return new Promise(() => {});
         },
       },
@@ -229,6 +233,7 @@ test("runAutonomousFlow recovers timed-out agent execution from worktree changes
       repositoryPath,
       executionMode: "agent-runner",
       deliveryMode: "local-git",
+      validationSteps: [{ id: "unit-tests", command: "node --test" }],
       metadata: {
         language: "javascript",
         defaultBranch: "main",
@@ -252,13 +257,16 @@ test("runAutonomousFlow recovers timed-out agent execution from worktree changes
     ).taskRequestId;
 
     const result = await platform.runAutonomousFlow(taskId);
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, JSON.stringify(result));
 
     const run = platform.runs.get(result.runId);
     assert.equal(run.execution.agentRun.recoveredFromWorktree, true);
     assert.deepEqual(run.execution.currentWorkState.changedFiles, ["src/feature.js"]);
     assert.equal(run.delivery.pullRequest.mode, "local-git");
     assert.match(run.delivery.pullRequest.commitSha, /^[0-9a-f]{40}$/);
+    assert.deepEqual(run.delivery.pullRequest.stagedFiles, ["src/feature.js"]);
+    assert.equal(run.delivery.branch.attributablePaths.includes(".tmp/minions-e2e.log"), false);
+    assert.equal(run.delivery.branch.attributablePaths.includes("package.json"), false);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }

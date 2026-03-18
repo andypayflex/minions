@@ -58,6 +58,7 @@ const FINAL_RESPONSE_SCHEMA = {
 const RUNNER_PROVIDER = "pi-rpc";
 const ANALYSIS_TAG = "MINIONS_ANALYSIS_RESULT";
 const EXECUTION_TAG = "MINIONS_EXECUTION_RESULT";
+const UNSUPPORTED_PI_PROVIDER_VALUES = new Set(["codex"]);
 
 function formatList(items, fallback = "none") {
   if (!Array.isArray(items) || items.length === 0) {
@@ -262,10 +263,23 @@ export function buildExecutionPrompt(packet) {
   ].join("\n");
 }
 
+function normalizePiProvider(provider) {
+  const value = String(provider || "").trim();
+  if (!value) {
+    return null;
+  }
+
+  if (UNSUPPORTED_PI_PROVIDER_VALUES.has(value.toLowerCase())) {
+    return null;
+  }
+
+  return value;
+}
+
 export class PiRpcRunner {
   constructor(options = {}) {
     this.command = options.command || "pi";
-    this.provider = options.provider || null;
+    this.provider = normalizePiProvider(options.provider);
     this.model = options.model || null;
     this.modelProvider = options.modelProvider || this.provider || null;
     this.sessionDir = options.sessionDir || null;
@@ -449,10 +463,13 @@ export function createExecutionRunnerFromEnv(overrides = {}) {
     return null;
   }
 
+  const configuredProvider = overrides.provider ?? process.env.MINIONS_PI_PROVIDER ?? null;
+  const normalizedProvider = normalizePiProvider(configuredProvider);
+
   return new PiRpcRunner({
     command: overrides.command || process.env.MINIONS_PI_COMMAND || "pi",
-    provider: overrides.provider || process.env.MINIONS_PI_PROVIDER || null,
-    modelProvider: overrides.modelProvider || process.env.MINIONS_PI_PROVIDER || null,
+    provider: normalizedProvider,
+    modelProvider: overrides.modelProvider || normalizedProvider,
     model: overrides.model || process.env.MINIONS_PI_MODEL || null,
     sessionDir: overrides.sessionDir || process.env.MINIONS_PI_SESSION_DIR || null,
     extraArgs:

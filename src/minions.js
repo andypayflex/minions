@@ -140,6 +140,17 @@ function inferAreaFromPath(filePath) {
   return String(filePath || "").split(/[\\/]/).filter(Boolean)[0] || "root";
 }
 
+function isRuntimeArtifactPath(filePath) {
+  const normalized = String(filePath || "").trim().replace(/\\/g, "/");
+  return normalized === ".tmp" || normalized.startsWith(".tmp/");
+}
+
+function filterRuntimeArtifactPaths(paths = []) {
+  return [...new Set(asArray(paths).map((item) => String(item || "").trim()).filter(Boolean))].filter(
+    (filePath) => !isRuntimeArtifactPath(filePath),
+  );
+}
+
 function inferFileTypeFromPath(filePath) {
   const lower = String(filePath || "").toLowerCase();
   return lower.includes("test") || lower.includes("spec") || lower.includes("__tests__") ? "test" : "code";
@@ -728,7 +739,7 @@ export class MinionsPlatform {
       return createResult(false, { stage: "critical-context", detail: preparation });
     }
 
-    const startup = this.startIsolatedRunEnvironment(taskId);
+    const startup = await this.startIsolatedRunEnvironment(taskId);
     if (!startup.ok) {
       return createResult(false, { stage: "environment-startup", detail: startup });
     }
@@ -1273,7 +1284,7 @@ export class MinionsPlatform {
     return clone(run.preparation.finalOutcome);
   }
 
-  startIsolatedRunEnvironment(taskId, options = {}) {
+  async startIsolatedRunEnvironment(taskId, options = {}) {
     const task = this._requireTask(taskId);
     const run = this._ensurePreparationRun(task);
 
@@ -1298,11 +1309,22 @@ export class MinionsPlatform {
       return createResult(false, { environment: clone(run.environment) });
     }
 
+    const environmentId = this.nextId("env");
     run.environment = {
-      id: this.nextId("env"),
+      id: environmentId,
       status: "active",
       startedAt: this.now(),
+      baseline: target?.repositoryPath ? null : undefined,
     };
+
+    if (target?.repositoryPath) {
+      try {
+        run.environment.baseline = await captureWorktreeBaseline(target.repositoryPath);
+      } catch {
+        run.environment.baseline = null;
+      }
+    }
+
     this._transitionRun(run, "environment-startup", "active", {
       environmentId: run.environment.id,
     });
@@ -1438,13 +1460,11 @@ export class MinionsPlatform {
       finalPayload?.summary ||
       (typeof final === "string" && final.trim() ? final.trim() : null);
     let changedFiles = Array.isArray(finalPayload?.changedFiles)
-      ? [
-          ...new Set(
-            finalPayload.changedFiles
-              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
-              .filter(Boolean),
-          ),
-        ]
+      ? filterRuntimeArtifactPaths(
+          finalPayload.changedFiles
+            .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+            .filter(Boolean),
+        )
       : [];
     const commandsRun = Array.isArray(finalPayload?.commandsRun)
       ? finalPayload.commandsRun.map((item) => String(item).trim()).filter(Boolean)
@@ -1458,8 +1478,10 @@ export class MinionsPlatform {
       (result.exitCode === null ? "agent runner did not complete" : `agent runner exited with code ${result.exitCode}`);
 
     if (result.ok && target.repositoryPath && changedFiles.length === 0) {
-      const status = await readWorkingTreeStatus(target.repositoryPath);
-      changedFiles = [...new Set(status.entries.map((entry) => entry.path).filter(Boolean))];
+      const baselineDelta = run.environment?.baseline
+        ? await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)
+        : null;
+      changedFiles = filterRuntimeArtifactPaths(baselineDelta?.attributablePaths || []);
     }
 
     if (!result.ok && target.repositoryPath) {
@@ -1560,8 +1582,10 @@ export class MinionsPlatform {
   }
 
   async _recoverExecutionFromWorktree(run, target, fallback = {}) {
-    const status = await readWorkingTreeStatus(target.repositoryPath);
-    const changedFiles = [...new Set(status.entries.map((entry) => entry.path).filter(Boolean))];
+    const baselineDelta = run.environment?.baseline
+      ? await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)
+      : null;
+    const changedFiles = filterRuntimeArtifactPaths(baselineDelta?.attributablePaths || []);
 
     if (changedFiles.length === 0) {
       return null;
@@ -1936,6 +1960,11 @@ export class MinionsPlatform {
         const branchName = `minions/${task.id}`;
         const localBranch = await createLocalDeliveryBranch(target.repositoryPath, branchName);
         const status = await readWorkingTreeStatus(target.repositoryPath);
+        const attributablePaths = filterRuntimeArtifactPaths(
+          run.environment?.baseline
+            ? (await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)).attributablePaths
+            : status.entries.map((entry) => entry.path),
+        );
 
         run.delivery.branch = {
           id: this.nextId("branch"),
@@ -1944,7 +1973,11 @@ export class MinionsPlatform {
           createdAt: this.now(),
           mode: "local-git",
           repositoryPath: target.repositoryPath,
-          status,
+          status: {
+            ...status,
+            entries: status.entries.filter((entry) => !isRuntimeArtifactPath(entry.path)),
+          },
+          attributablePaths,
         };
         this._recordLedger(run, "delivery-branch-created", run.delivery.branch);
         return createResult(true, { branch: clone(run.delivery.branch) });
@@ -2069,7 +2102,7 @@ export class MinionsPlatform {
         const commit = await createLocalDeliveryCommit(
           target.repositoryPath,
           `Minions: ${task.title}`,
-          run.execution.changes.map((change) => change.path),
+          filterRuntimeArtifactPaths(run.execution.changes.map((change) => change.path)),
         );
         const pullRequest = {
           id: this.nextId("pr"),
