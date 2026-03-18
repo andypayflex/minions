@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minions Control Room</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Autonomous Delivery Prototype</p>
+        <h1>Minions Control Room</h1>
+        <p class="lede">
+          Submit a task, import an Azure work item, launch a full autonomous run, and inspect the resulting execution, validation, and delivery artifacts through the live API.
+        </p>
+        <div class="hero-stats" id="hero-stats"></div>
+      </section>
+
+      <section class="grid">
+        <article class="panel form-panel">
+          <div class="panel-head">
+            <h2>Submit Task</h2>
+            <button id="refresh-button" class="ghost-button">Refresh</button>
+          </div>
+          <form id="task-form">
+            <label>
+              <span>Title</span>
+              <input name="title" value="Add scoped task intake" required />
+            </label>
+            <label>
+              <span>Objective</span>
+              <textarea name="objective" rows="3" required>Implement the first Minions intake path and preserve validation evidence for downstream delivery.</textarea>
+            </label>
+            <label>
+              <span>Constraints</span>
+              <textarea name="constraints" rows="3">preserve deterministic rules
+add tests
+keep operator visibility</textarea>
+            </label>
+            <label>
+              <span>Expected Outcome</span>
+              <input name="expectedOutcome" value="working code with tests and PR summary" required />
+            </label>
+            <label>
+              <span>Repository</span>
+              <select name="repository">
+                <option value="repo/minions-app">repo/minions-app</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button type="submit">Create Task</button>
+            </div>
+          </form>
+          <pre id="submission-result" class="code-block muted">No task submitted yet.</pre>
+        </article>
+
+        <article class="panel form-panel">
+          <div class="panel-head">
+            <h2>Import Azure Ticket</h2>
+            <span class="caption">Requires Azure DevOps env config on the server.</span>
+          </div>
+          <form id="azure-form">
+            <label>
+              <span>Work Item ID</span>
+              <input name="workItemId" placeholder="12345" required />
+            </label>
+            <label>
+              <span>Repository Override</span>
+              <input name="repository" value="repo/minions-app" />
+            </label>
+            <div class="form-actions">
+              <button type="submit">Import From Azure</button>
+            </div>
+          </form>
+          <pre id="azure-result" class="code-block muted">No Azure work item imported yet.</pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Tasks</h2>
+            <span class="caption">Use a task row to launch a full autonomous run.</span>
+          </div>
+          <div id="task-list" class="stack"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Runs</h2>
+            <span class="caption">Inspect live status, completed history, and operator actions.</span>
+          </div>
+          <div id="run-list" class="stack"></div>
+        </article>
+
+        <article class="panel detail-panel">
+          <div class="panel-head">
+            <h2>Inspector</h2>
+            <span class="caption">API responses land here.</span>
+          </div>
+          <div class="detail-actions">
+            <button id="show-health">Health</button>
+          </div>
+          <pre id="inspector" class="code-block">Select an action to inspect live API output.</pre>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>
