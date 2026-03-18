@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createGitHubPrPreflightFromEnv, GitHubPrPreflight } from "../src/preflight.js";
+import {
+  createGitHubPrPreflightFromEnv,
+  GitHubPrPreflight,
+  parseGitStatusEntries,
+} from "../src/preflight.js";
 
 function createExec(results = {}) {
   return async (command, args) => {
@@ -28,7 +32,7 @@ test("GitHubPrPreflight passes when gh auth and git origin checks succeed", asyn
     }),
   });
 
-  const result = await preflight.check(process.cwd());
+  const result = await preflight.checkRunStart(process.cwd());
   assert.equal(result.ok, true);
   assert.deepEqual(result.failedChecks, []);
 });
@@ -44,7 +48,7 @@ test("GitHubPrPreflight fails when gh auth is missing", async () => {
     }),
   });
 
-  const result = await preflight.check(process.cwd());
+  const result = await preflight.checkRunStart(process.cwd());
   assert.equal(result.ok, false);
   assert.equal(result.failedChecks.includes("gh-authenticated"), true);
 });
@@ -59,7 +63,7 @@ test("createGitHubPrPreflightFromEnv requires clean worktree by default and allo
   assert.equal(disabled.requireCleanWorktree, false);
 });
 
-test("GitHubPrPreflight enforces clean worktree only when configured", async () => {
+test("run-start preflight fails on dirty non-runtime files", async () => {
   const exec = createExec({
     "gh --version": { stdout: "gh version 2.0.0", stderr: "" },
     "gh auth status": { stdout: "logged in", stderr: "" },
@@ -68,12 +72,47 @@ test("GitHubPrPreflight enforces clean worktree only when configured", async () 
     "git status --short": { stdout: " M src/file.js\n", stderr: "" },
   });
 
-  const allowed = new GitHubPrPreflight({ exec, requireCleanWorktree: false });
-  const allowedResult = await allowed.check(process.cwd());
-  assert.equal(allowedResult.ok, true);
+  const required = new GitHubPrPreflight({ exec, requireCleanWorktree: true });
+  const result = await required.checkRunStart(process.cwd());
+  assert.equal(result.ok, false);
+  assert.equal(result.failedChecks.includes("git-worktree-clean"), true);
+});
+
+test("run-start preflight ignores .tmp runtime artifacts", async () => {
+  const exec = createExec({
+    "gh --version": { stdout: "gh version 2.0.0", stderr: "" },
+    "gh auth status": { stdout: "logged in", stderr: "" },
+    "git rev-parse --is-inside-work-tree": { stdout: "true\n", stderr: "" },
+    "git remote get-url origin": { stdout: "https://github.com/example/repo.git\n", stderr: "" },
+    "git status --short": { stdout: "?? .tmp/session.json\n", stderr: "" },
+  });
 
   const required = new GitHubPrPreflight({ exec, requireCleanWorktree: true });
-  const requiredResult = await required.check(process.cwd());
-  assert.equal(requiredResult.ok, false);
-  assert.equal(requiredResult.failedChecks.includes("git-worktree-clean"), true);
+  const result = await required.checkRunStart(process.cwd());
+  assert.equal(result.ok, true);
+  assert.equal(result.failedChecks.includes("git-worktree-clean"), false);
+});
+
+test("delivery preflight allows dirty repo after execution", async () => {
+  const exec = createExec({
+    "gh --version": { stdout: "gh version 2.0.0", stderr: "" },
+    "gh auth status": { stdout: "logged in", stderr: "" },
+    "git rev-parse --is-inside-work-tree": { stdout: "true\n", stderr: "" },
+    "git remote get-url origin": { stdout: "https://github.com/example/repo.git\n", stderr: "" },
+    "git status --short": { stdout: " M src/file.js\n", stderr: "" },
+  });
+
+  const preflight = new GitHubPrPreflight({ exec, requireCleanWorktree: true });
+  const result = await preflight.checkDelivery(process.cwd());
+  assert.equal(result.ok, true);
+  assert.equal(result.failedChecks.includes("git-worktree-clean"), false);
+  assert.equal(result.checks.some((entry) => entry.name === "git-worktree-clean"), false);
+});
+
+test("parseGitStatusEntries preserves .tmp paths for filtering", () => {
+  const entries = parseGitStatusEntries(" M src/file.js\n?? .tmp/run/log.txt\n");
+  assert.deepEqual(
+    entries.map((entry) => entry.path),
+    ["src/file.js", ".tmp/run/log.txt"],
+  );
 });

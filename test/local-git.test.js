@@ -10,7 +10,9 @@ import { MinionsPlatform } from "../src/minions.js";
 import {
   createLocalDeliveryBranch,
   createLocalDeliveryCommit,
+  createRunWorktree,
   readWorkingTreeStatus,
+  removeRunWorktree,
 } from "../src/local-git.js";
 
 function runExecFile(command, args, options = {}) {
@@ -90,6 +92,27 @@ test("local git helper stages only delivery-scoped files", async () => {
   }
 });
 
+test("local git helpers create and remove an isolated run worktree", async () => {
+  const repositoryPath = await createTempGitRepo();
+
+  try {
+    const worktree = await createRunWorktree(repositoryPath, "minions/task-worktree");
+    assert.match(worktree.path, /run-/);
+    await fs.writeFile(path.join(worktree.path, "src", "feature.js"), "export const feature = () => 'worktree';\n");
+
+    const sourceStatus = await readWorkingTreeStatus(repositoryPath);
+    assert.equal(sourceStatus.clean, true);
+
+    const worktreeStatus = await readWorkingTreeStatus(worktree.path);
+    assert.equal(worktreeStatus.entries[0].path, "src/feature.js");
+
+    await removeRunWorktree(worktree.path);
+    await assert.rejects(() => fs.access(worktree.path));
+  } finally {
+    await fs.rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
 test("platform local-git delivery creates a real branch and commit for a completed run", async () => {
   const repositoryPath = await createTempGitRepo();
 
@@ -155,7 +178,9 @@ test("platform local-git delivery creates a real branch and commit for a complet
 
     const startup = await platform.startIsolatedRunEnvironment(taskId);
     const runId = startup.runId;
-    await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+    const runRepositoryPath = startup.environment.repositoryPath;
+    assert.notEqual(runRepositoryPath, repositoryPath);
+    await fs.writeFile(path.join(runRepositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
     assert.equal(
       platform.executeRepositoryChanges(runId, {
         changes: [
@@ -176,12 +201,14 @@ test("platform local-git delivery creates a real branch and commit for a complet
     assert.equal(branch.ok, true);
     assert.equal(branch.branch.name, `minions/${taskId}`);
     assert.equal(branch.branch.mode, "local-git");
+    assert.equal(platform.runs.get(runId).delivery.stopPoint.stage, "delivery-branch");
 
     const pullRequest = await platform.publishPullRequestAsync(runId);
     assert.equal(pullRequest.ok, true);
     assert.equal(pullRequest.pullRequest.mode, "local-git");
     assert.match(pullRequest.pullRequest.commitSha, /^[0-9a-f]{40}$/);
     assert.deepEqual(pullRequest.pullRequest.stagedFiles, ["src/feature.js"]);
+    assert.equal(platform.runs.get(runId).delivery.stopPoint.reason.includes("stops here"), true);
 
     platform._markRunDeliveredSuccessfully(platform.runs.get(runId));
     assert.equal(platform.runs.get(runId).currentOutcomeState, "successful");
@@ -219,9 +246,10 @@ test("runAutonomousFlow recovers timed-out agent execution from baseline delta a
             },
           };
         },
-        async run() {
-          await fs.writeFile(path.join(repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
-          await fs.writeFile(path.join(repositoryPath, ".tmp", "minions-e2e.log"), "runtime log\n");
+        async run(packet) {
+          await fs.mkdir(path.join(packet.repository.repositoryPath, ".tmp"), { recursive: true });
+          await fs.writeFile(path.join(packet.repository.repositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
+          await fs.writeFile(path.join(packet.repository.repositoryPath, ".tmp", "minions-e2e.log"), "runtime log\n");
           return new Promise(() => {});
         },
       },

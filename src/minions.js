@@ -1,12 +1,14 @@
 import { analyzeLocalRepositoryTarget } from "./local-repository.js";
 import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
-import { createGitHubPrPreflightFromEnv } from "./preflight.js";
+import { createGitHubPrPreflightFromEnv, isRuntimeArtifactPath } from "./preflight.js";
 import {
   captureWorktreeBaseline,
-  createLocalDeliveryBranch,
   createLocalDeliveryCommit,
+  createRunWorktree,
   diffWorktreePathsFromBaseline,
+  ensureLocalBranch,
   readWorkingTreeStatus,
+  removeRunWorktree,
 } from "./local-git.js";
 import path from "node:path";
 import { inferSequenceSeedsFromMemory, mergeSequenceSeeds } from "./repository-sequence.js";
@@ -140,11 +142,6 @@ function inferAreaFromPath(filePath) {
   return String(filePath || "").split(/[\\/]/).filter(Boolean)[0] || "root";
 }
 
-function isRuntimeArtifactPath(filePath) {
-  const normalized = String(filePath || "").trim().replace(/\\/g, "/");
-  return normalized === ".tmp" || normalized.startsWith(".tmp/");
-}
-
 function filterRuntimeArtifactPaths(paths = []) {
   return [...new Set(asArray(paths).map((item) => String(item || "").trim()).filter(Boolean))].filter(
     (filePath) => !isRuntimeArtifactPath(filePath),
@@ -154,6 +151,16 @@ function filterRuntimeArtifactPaths(paths = []) {
 function inferFileTypeFromPath(filePath) {
   const lower = String(filePath || "").toLowerCase();
   return lower.includes("test") || lower.includes("spec") || lower.includes("__tests__") ? "test" : "code";
+}
+
+function createDeliveryStopPoint(stage, status, reason, extra = {}) {
+  return {
+    stage,
+    status,
+    reason,
+    recordedAt: new Date().toISOString(),
+    ...extra,
+  };
 }
 
 export class MinionsPlatform {
@@ -307,6 +314,48 @@ export class MinionsPlatform {
     });
   }
 
+  _effectiveRepositoryPath(target, run) {
+    return run?.effectiveRepositoryPath || run?.environment?.repositoryPath || target?.repositoryPath || null;
+  }
+
+  _recordDeliveryStopPoint(run, stage, status, reason, extra = {}) {
+    run.delivery.stopPoint = createDeliveryStopPoint(stage, status, reason, extra);
+    this._recordLedger(run, "delivery-stop-point-recorded", run.delivery.stopPoint, status === "completed" ? "autonomous" : "blocked");
+    return clone(run.delivery.stopPoint);
+  }
+
+  async cleanupRunEnvironment(runId, options = {}) {
+    const run = this._requireRun(runId);
+    const worktree = run.environment?.worktree;
+
+    if (!worktree?.path || worktree.cleanupStatus === "completed") {
+      return createResult(true, { cleanup: clone(worktree || { cleanupStatus: "not-required" }) });
+    }
+
+    try {
+      await removeRunWorktree(worktree.path);
+      run.environment.worktree = {
+        ...worktree,
+        cleanupStatus: "completed",
+        cleanedUpAt: this.now(),
+      };
+      this._recordLedger(run, "run-worktree-cleaned-up", { path: worktree.path });
+      return createResult(true, { cleanup: clone(run.environment.worktree) });
+    } catch (error) {
+      run.environment.worktree = {
+        ...worktree,
+        cleanupStatus: options.ignoreErrors ? "cleanup-failed-ignored" : "cleanup-failed",
+        cleanupError: error instanceof Error ? error.message : "worktree cleanup failed",
+        cleanupAttemptedAt: this.now(),
+      };
+      this._recordLedger(run, "run-worktree-cleanup-failed", run.environment.worktree, "blocked");
+      if (options.ignoreErrors) {
+        return createResult(true, { cleanup: clone(run.environment.worktree) });
+      }
+      return createResult(false, { cleanup: clone(run.environment.worktree) });
+    }
+  }
+
   _ensurePreparationRun(task) {
     if (task.runId) {
       return this._requireRun(task.runId);
@@ -333,6 +382,7 @@ export class MinionsPlatform {
         ],
       },
       environment: null,
+      effectiveRepositoryPath: null,
       preparation: {
         repositoryContext: null,
         relatedWork: {
@@ -361,6 +411,7 @@ export class MinionsPlatform {
         gateHistory: [],
         branch: null,
         pullRequest: null,
+        stopPoint: null,
       },
       failureClassification: null,
       failureSummary: null,
@@ -744,55 +795,60 @@ export class MinionsPlatform {
       return createResult(false, { stage: "environment-startup", detail: startup });
     }
 
-    const execution = await this.executeRepositoryChangesAsync(startup.runId);
-    if (!execution.ok) {
-      return createResult(false, { stage: "execution", detail: execution, runId: startup.runId });
-    }
+    try {
+      const execution = await this.executeRepositoryChangesAsync(startup.runId);
+      if (!execution.ok) {
+        return createResult(false, { stage: "execution", detail: execution, runId: startup.runId });
+      }
 
-    const validation = this.runRepositoryValidation(startup.runId);
-    if (!validation.ok) {
-      return createResult(false, { stage: "validation", detail: validation, runId: startup.runId });
-    }
+      const validation = this.runRepositoryValidation(startup.runId);
+      if (!validation.ok) {
+        return createResult(false, { stage: "validation", detail: validation, runId: startup.runId });
+      }
 
-    this.captureStructuredValidationEvidence(startup.runId);
-    const completion = this.determineCompletionStatus(startup.runId);
+      this.captureStructuredValidationEvidence(startup.runId);
+      const completion = this.determineCompletionStatus(startup.runId);
 
-    if (completion.state !== "successful") {
-      this.classifyRunFailure(startup.runId);
-      this.produceFailureSummary(startup.runId);
-      this.preserveIntermediateState(startup.runId);
-      return createResult(false, {
-        stage: "completion",
-        detail: completion,
+      if (completion.state !== "successful") {
+        this._recordDeliveryStopPoint(this._requireRun(startup.runId), "validation", "blocked", "delivery stops before branch publication because completion is not successful", { completion });
+        this.classifyRunFailure(startup.runId);
+        this.produceFailureSummary(startup.runId);
+        this.preserveIntermediateState(startup.runId);
+        return createResult(false, {
+          stage: "completion",
+          detail: completion,
+          runId: startup.runId,
+        });
+      }
+
+      const branch = await this.createDeliveryBranchAsync(startup.runId);
+      if (!branch.ok) {
+        this.classifyRunFailure(startup.runId);
+        this.produceFailureSummary(startup.runId);
+        this.preserveIntermediateState(startup.runId);
+        return createResult(false, { stage: "delivery-branch", detail: branch, runId: startup.runId });
+      }
+
+      const pullRequest = await this.publishPullRequestAsync(startup.runId);
+      if (!pullRequest.ok) {
+        this.classifyRunFailure(startup.runId);
+        this.produceFailureSummary(startup.runId);
+        this.preserveIntermediateState(startup.runId);
+        return createResult(false, { stage: "pull-request", detail: pullRequest, runId: startup.runId });
+      }
+
+      this._markRunDeliveredSuccessfully(this._requireRun(startup.runId));
+
+      return createResult(true, {
+        taskId,
         runId: startup.runId,
+        completion,
+        branch: branch.branch,
+        pullRequest: pullRequest.pullRequest,
       });
+    } finally {
+      await this.cleanupRunEnvironment(startup.runId, { ignoreErrors: true });
     }
-
-    const branch = await this.createDeliveryBranchAsync(startup.runId);
-    if (!branch.ok) {
-      this.classifyRunFailure(startup.runId);
-      this.produceFailureSummary(startup.runId);
-      this.preserveIntermediateState(startup.runId);
-      return createResult(false, { stage: "delivery-branch", detail: branch, runId: startup.runId });
-    }
-
-    const pullRequest = await this.publishPullRequestAsync(startup.runId);
-    if (!pullRequest.ok) {
-      this.classifyRunFailure(startup.runId);
-      this.produceFailureSummary(startup.runId);
-      this.preserveIntermediateState(startup.runId);
-      return createResult(false, { stage: "pull-request", detail: pullRequest, runId: startup.runId });
-    }
-
-    this._markRunDeliveredSuccessfully(this._requireRun(startup.runId));
-
-    return createResult(true, {
-      taskId,
-      runId: startup.runId,
-      completion,
-      branch: branch.branch,
-      pullRequest: pullRequest.pullRequest,
-    });
   }
 
   retrieveRepositoryContext(taskId) {
@@ -1051,7 +1107,7 @@ export class MinionsPlatform {
           },
           repository: {
             repositoryId: target.repositoryId,
-            repositoryPath: target.repositoryPath,
+            repositoryPath: this._effectiveRepositoryPath(target, run),
             files: clone((run.preparation.repositoryContext.files || []).slice(0, 200)),
             validationSteps: clone(run.preparation.repositoryContext.validationSteps || []),
             metadata: clone(run.preparation.repositoryContext.metadata || {}),
@@ -1073,10 +1129,10 @@ export class MinionsPlatform {
             summary: result.final.summary || "AI task analysis completed",
             reasoning: result.final.reasoning || "",
             relevantFiles: asArray(result.final.relevantFiles)
-              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+              .map((item) => normalizeRepositoryRelativePath(this._effectiveRepositoryPath(target, run), item))
               .filter(Boolean),
             testFiles: asArray(result.final.testFiles)
-              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+              .map((item) => normalizeRepositoryRelativePath(this._effectiveRepositoryPath(target, run), item))
               .filter(Boolean),
             notes: asArray(result.final.notes).map((item) => String(item)).filter(Boolean),
             completedAt: this.now(),
@@ -1296,37 +1352,147 @@ export class MinionsPlatform {
 
     const target = this.supportedTargets.get(task.repository);
     const failureReason = options.forceFailure || target?.failures?.environmentStartup;
+    const environmentId = this.nextId("env");
+    const deliveryBranchName = `minions/${task.id}`;
 
     if (failureReason) {
       run.environment = {
-        id: this.nextId("env"),
+        id: environmentId,
         status: "failed",
         reason: String(failureReason),
       };
       run.failedStage = "environment-startup";
       run.failureReason = run.environment.reason;
+      this._recordDeliveryStopPoint(run, "environment-startup", "blocked", run.failureReason);
       this._transitionRun(run, "environment-startup", "failed", { reason: run.failureReason });
       return createResult(false, { environment: clone(run.environment) });
     }
 
-    const environmentId = this.nextId("env");
     run.environment = {
       id: environmentId,
-      status: "active",
+      status: "starting",
       startedAt: this.now(),
+      sourceRepositoryPath: target?.repositoryPath || null,
+      repositoryPath: target?.repositoryPath || null,
       baseline: target?.repositoryPath ? null : undefined,
+      branch: null,
+      worktree: null,
     };
+    run.effectiveRepositoryPath = target?.repositoryPath || null;
 
-    if (target?.repositoryPath) {
+    if (target?.deliveryMode === "github-pr" && target?.repositoryPath) {
+      const preflight = await this.githubPrPreflight.checkRunStart(target.repositoryPath, { requireCleanWorktree: true });
+      this._recordLedger(run, "github-pr-preflight-run-start-checked", preflight, preflight.ok ? "autonomous" : "blocked");
+
+      if (!preflight.ok) {
+        run.failedStage = "environment-startup";
+        run.failureReason = "github-pr run-start preflight checks failed";
+        run.environment = {
+          ...run.environment,
+          status: "failed",
+          reason: run.failureReason,
+          preflight,
+        };
+        this._recordDeliveryStopPoint(run, "environment-startup", "blocked", run.failureReason, { preflight });
+        this._transitionRun(run, "environment-startup", "failed", { reason: run.failureReason, preflight });
+        return createResult(false, { environment: clone(run.environment), preflight });
+      }
+    }
+
+    if (target?.repositoryPath && ["local-git", "github-pr"].includes(target?.deliveryMode)) {
       try {
-        run.environment.baseline = await captureWorktreeBaseline(target.repositoryPath);
+        const worktree = await createRunWorktree(target.repositoryPath, deliveryBranchName, options);
+        run.environment.worktree = {
+          ...worktree,
+          lifecycle: "created",
+          usage: "execution-and-delivery",
+        };
+        run.environment.repositoryPath = worktree.path;
+        run.effectiveRepositoryPath = worktree.path;
+        run.environment.branch = {
+          name: worktree.branchName,
+          baseRef: worktree.sourceBranch,
+          role: "environment-worktree",
+          createdAt: worktree.createdAt,
+          sourceRepositoryPath: worktree.sourceRepositoryPath,
+        };
+        run.delivery.branch = {
+          id: this.nextId("branch"),
+          name: worktree.branchName,
+          baseRef: worktree.sourceBranch,
+          createdAt: worktree.createdAt,
+          mode: target.deliveryMode,
+          repositoryPath: worktree.path,
+          sourceRepositoryPath: worktree.sourceRepositoryPath,
+          role: "delivery-candidate",
+          createdDuringEnvironmentSetup: true,
+          published: false,
+        };
+        this._recordLedger(run, "run-worktree-created", run.environment.worktree);
+        this._recordLedger(run, "delivery-branch-precreated", run.delivery.branch);
+      } catch (error) {
+        run.failedStage = "environment-startup";
+        run.failureReason = error instanceof Error ? error.message : "run worktree creation failed";
+        run.environment = {
+          ...run.environment,
+          status: "failed",
+          reason: run.failureReason,
+        };
+        this._recordDeliveryStopPoint(run, "environment-startup", "blocked", run.failureReason);
+        this._transitionRun(run, "environment-startup", "failed", { reason: run.failureReason });
+        return createResult(false, { environment: clone(run.environment) });
+      }
+    } else if (target?.repositoryPath) {
+      try {
+        const branch = await ensureLocalBranch(target.repositoryPath, deliveryBranchName);
+        run.environment.branch = {
+          name: branch.name,
+          baseRef: branch.baseRef,
+          role: "environment-branch",
+          createdAt: this.now(),
+          existed: branch.existed,
+        };
+        run.delivery.branch = {
+          id: this.nextId("branch"),
+          name: branch.name,
+          baseRef: branch.baseRef,
+          createdAt: this.now(),
+          mode: target.deliveryMode || "simulated",
+          repositoryPath: target.repositoryPath,
+          role: "delivery-candidate",
+          createdDuringEnvironmentSetup: true,
+          published: false,
+        };
+        this._recordLedger(run, "delivery-branch-precreated", run.delivery.branch);
+      } catch (error) {
+        run.failedStage = "environment-startup";
+        run.failureReason = error instanceof Error ? error.message : "environment branch creation failed";
+        run.environment = {
+          ...run.environment,
+          status: "failed",
+          reason: run.failureReason,
+        };
+        this._recordDeliveryStopPoint(run, "environment-startup", "blocked", run.failureReason);
+        this._transitionRun(run, "environment-startup", "failed", { reason: run.failureReason });
+        return createResult(false, { environment: clone(run.environment) });
+      }
+    }
+
+    if (run.effectiveRepositoryPath) {
+      try {
+        run.environment.baseline = await captureWorktreeBaseline(run.effectiveRepositoryPath);
       } catch {
         run.environment.baseline = null;
       }
     }
 
+    run.environment.status = "active";
+    this._recordDeliveryStopPoint(run, "environment-startup", "ready", "execution may proceed; delivery remains gated by validation and publication");
     this._transitionRun(run, "environment-startup", "active", {
       environmentId: run.environment.id,
+      repositoryPath: run.effectiveRepositoryPath,
+      branchName: run.delivery.branch?.name || null,
+      worktreePath: run.environment.worktree?.path || null,
     });
 
     return createResult(true, { environment: clone(run.environment), runId: run.id });
@@ -1395,7 +1561,7 @@ export class MinionsPlatform {
     if (
       target?.executionMode === "agent-runner" &&
       this.executionRunner &&
-      target.repositoryPath &&
+      this._effectiveRepositoryPath(target, run) &&
       !options.forceWriteFailure
     ) {
       return this._executeRepositoryChangesWithRunner(run, target);
@@ -1426,7 +1592,7 @@ export class MinionsPlatform {
         },
         repository: {
           repositoryId: target.repositoryId,
-          repositoryPath: target.repositoryPath,
+          repositoryPath: this._effectiveRepositoryPath(target, run),
           metadata: clone(run.preparation.repositoryContext?.metadata || target.metadata || {}),
         },
         context: {
@@ -1477,14 +1643,14 @@ export class MinionsPlatform {
       finalSummary ||
       (result.exitCode === null ? "agent runner did not complete" : `agent runner exited with code ${result.exitCode}`);
 
-    if (result.ok && target.repositoryPath && changedFiles.length === 0) {
+    if (result.ok && this._effectiveRepositoryPath(target, run) && changedFiles.length === 0) {
       const baselineDelta = run.environment?.baseline
-        ? await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)
+        ? await diffWorktreePathsFromBaseline(this._effectiveRepositoryPath(target, run), run.environment.baseline)
         : null;
       changedFiles = filterRuntimeArtifactPaths(baselineDelta?.attributablePaths || []);
     }
 
-    if (!result.ok && target.repositoryPath) {
+    if (!result.ok && this._effectiveRepositoryPath(target, run)) {
       const recovered = await this._recoverExecutionFromWorktree(run, target, {
         provider: result.provider || null,
         modelProvider: result.modelProvider || null,
@@ -1582,8 +1748,9 @@ export class MinionsPlatform {
   }
 
   async _recoverExecutionFromWorktree(run, target, fallback = {}) {
-    const baselineDelta = run.environment?.baseline
-      ? await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)
+    const effectiveRepositoryPath = this._effectiveRepositoryPath(target, run);
+    const baselineDelta = run.environment?.baseline && effectiveRepositoryPath
+      ? await diffWorktreePathsFromBaseline(effectiveRepositoryPath, run.environment.baseline)
       : null;
     const changedFiles = filterRuntimeArtifactPaths(baselineDelta?.attributablePaths || []);
 
@@ -1945,11 +2112,13 @@ export class MinionsPlatform {
     const run = this._requireRun(runId);
     const task = this._requireTask(run.taskRequestId);
     const target = this.supportedTargets.get(task.repository);
+    const effectiveRepositoryPath = this._effectiveRepositoryPath(target, run);
 
-    if (["local-git", "github-pr"].includes(target?.deliveryMode) && target.repositoryPath && !options.forceFailure) {
+    if (["local-git", "github-pr"].includes(target?.deliveryMode) && effectiveRepositoryPath && !options.forceFailure) {
       const gates = this.evaluateDeliveryGates(runId);
 
       if (!gates.eligible) {
+        this._recordDeliveryStopPoint(run, "delivery-branch", "blocked", "delivery branch remains unpublished because validation gates failed", { gates });
         return createResult(false, {
           reason: "run is not eligible for delivery branch creation",
           gates,
@@ -1957,42 +2126,49 @@ export class MinionsPlatform {
       }
 
       try {
-        const branchName = `minions/${task.id}`;
-        const localBranch = await createLocalDeliveryBranch(target.repositoryPath, branchName);
-        const status = await readWorkingTreeStatus(target.repositoryPath);
+        const status = await readWorkingTreeStatus(effectiveRepositoryPath);
         const attributablePaths = filterRuntimeArtifactPaths(
           run.environment?.baseline
-            ? (await diffWorktreePathsFromBaseline(target.repositoryPath, run.environment.baseline)).attributablePaths
+            ? (await diffWorktreePathsFromBaseline(effectiveRepositoryPath, run.environment.baseline)).attributablePaths
             : status.entries.map((entry) => entry.path),
         );
 
         run.delivery.branch = {
-          id: this.nextId("branch"),
-          name: localBranch.name,
-          baseRef: localBranch.baseRef,
-          createdAt: this.now(),
-          mode: "local-git",
-          repositoryPath: target.repositoryPath,
+          ...(run.delivery.branch || {}),
+          id: run.delivery.branch?.id || this.nextId("branch"),
+          name: run.delivery.branch?.name || `minions/${task.id}`,
+          baseRef: run.delivery.branch?.baseRef || run.environment?.branch?.baseRef || null,
+          createdAt: run.delivery.branch?.createdAt || this.now(),
+          mode: target.deliveryMode,
+          repositoryPath: effectiveRepositoryPath,
+          sourceRepositoryPath: run.environment?.sourceRepositoryPath || target.repositoryPath,
           status: {
             ...status,
             entries: status.entries.filter((entry) => !isRuntimeArtifactPath(entry.path)),
           },
           attributablePaths,
+          deliveryGatesEligible: true,
+          published: false,
         };
-        this._recordLedger(run, "delivery-branch-created", run.delivery.branch);
+        this._recordLedger(run, "delivery-branch-ready", run.delivery.branch);
+        this._recordDeliveryStopPoint(run, "delivery-branch", "ready", "branch is prepared but PR delivery is still pending pull request publication", {
+          branchName: run.delivery.branch.name,
+          mode: target.deliveryMode,
+        });
         return createResult(true, { branch: clone(run.delivery.branch) });
       } catch (error) {
         run.failedStage = "delivery-branch";
-        run.failureReason = error instanceof Error ? error.message : "local git branch creation failed";
+        run.failureReason = error instanceof Error ? error.message : "delivery branch preparation failed";
         this._recordLedger(
           run,
           "delivery-branch-failed",
           {
             reason: run.failureReason,
-            mode: "local-git",
+            mode: target.deliveryMode,
           },
           "blocked",
         );
+        this._recordDeliveryStopPoint(run, "delivery-branch", "blocked", run.failureReason, { mode: target.deliveryMode });
         return createResult(false, {
           failure: {
             stage: "delivery-branch",
@@ -2058,10 +2234,13 @@ export class MinionsPlatform {
     const task = this._requireTask(run.taskRequestId);
     const target = this.supportedTargets.get(task.repository);
 
-    if (["local-git", "github-pr"].includes(target?.deliveryMode) && target.repositoryPath) {
+    const effectiveRepositoryPath = this._effectiveRepositoryPath(target, run);
+
+    if (["local-git", "github-pr"].includes(target?.deliveryMode) && effectiveRepositoryPath) {
       const gates = this.evaluateDeliveryGates(runId);
 
       if (!gates.eligible) {
+        this._recordDeliveryStopPoint(run, "pull-request", "blocked", "pull request publication stopped at delivery gates", { gates });
         return createResult(false, {
           reason: "pull request creation is blocked until all delivery gates are satisfied",
           gates,
@@ -2069,6 +2248,7 @@ export class MinionsPlatform {
       }
 
       if (!run.delivery.branch) {
+        this._recordDeliveryStopPoint(run, "pull-request", "blocked", "pull request publication cannot start without a prepared delivery branch");
         return createResult(false, {
           reason: "delivery branch is required before PR publication",
         });
@@ -2089,18 +2269,19 @@ export class MinionsPlatform {
 
       try {
         if (target.deliveryMode === "github-pr") {
-          const preflight = await this.githubPrPreflight.check(target.repositoryPath);
-          this._recordLedger(run, "github-pr-preflight-checked", preflight, preflight.ok ? "autonomous" : "blocked");
+          const preflight = await this.githubPrPreflight.checkDelivery(effectiveRepositoryPath, { requireCleanWorktree: false });
+          this._recordLedger(run, "github-pr-preflight-delivery-checked", preflight, preflight.ok ? "autonomous" : "blocked");
           if (!preflight.ok) {
+            this._recordDeliveryStopPoint(run, "pull-request", "blocked", "github-pr delivery preflight checks failed", { preflight });
             return createResult(false, {
-              reason: "github-pr preflight checks failed",
+              reason: "github-pr delivery preflight checks failed",
               preflight,
             });
           }
         }
 
         const commit = await createLocalDeliveryCommit(
-          target.repositoryPath,
+          effectiveRepositoryPath,
           `Minions: ${task.title}`,
           filterRuntimeArtifactPaths(run.execution.changes.map((change) => change.path)),
         );
@@ -2138,7 +2319,7 @@ export class MinionsPlatform {
           }
 
           const published = await this.githubDeliveryRunner.publishPullRequest({
-            repositoryPath: target.repositoryPath,
+            repositoryPath: effectiveRepositoryPath,
             branchName: run.delivery.branch.name,
             baseBranch: target.metadata?.defaultBranch || "main",
             title: pullRequest.title,
@@ -2167,6 +2348,15 @@ export class MinionsPlatform {
         }
 
         run.delivery.pullRequest = pullRequest;
+        run.delivery.branch = {
+          ...(run.delivery.branch || {}),
+          published: true,
+        };
+        this._recordDeliveryStopPoint(run, "delivery", "completed", target.deliveryMode === "github-pr" ? "pull request published to GitHub" : "local delivery commit created; remote PR publication intentionally stops here", {
+          mode: target.deliveryMode,
+          branchName: run.delivery.branch?.name || null,
+          pullRequestId: pullRequest.id,
+        });
         this._recordLedger(run, "pull-request-created", {
           prId: pullRequest.id,
           taskLink: pullRequest.taskLink,
@@ -2178,6 +2368,7 @@ export class MinionsPlatform {
         const reason = error instanceof Error ? error.message : "local git commit failed";
         run.failedStage = "pull-request";
         run.failureReason = reason;
+        this._recordDeliveryStopPoint(run, "pull-request", "blocked", reason, { mode: target.deliveryMode });
         this._recordLedger(run, "pull-request-failed", { reason, mode: "local-git" }, "blocked");
         return createResult(false, {
           failure: {
@@ -2402,11 +2593,16 @@ export class MinionsPlatform {
         progress: clone(run.progressState),
         preparation: clone(run.preparation),
         validation: clone(run.validation),
+        environment: clone(run.environment),
       },
       outputs: {
         changes: clone(run.execution.changes),
         evidence: clone(run.evidence),
         delivery: clone(run.delivery),
+      },
+      repository: {
+        sourceRepositoryPath: run.environment?.sourceRepositoryPath || null,
+        effectiveRepositoryPath: run.effectiveRepositoryPath || null,
       },
       outcomes: {
         completion: clone(run.completion),

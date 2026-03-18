@@ -22,7 +22,7 @@ Use these environment variables to configure runtime:
 - `MINIONS_GIT_COMMAND` — git command. Defaults to `git`.
 - `MINIONS_GITHUB_BASE_BRANCH` — base branch for PR creation.
 - `MINIONS_GITHUB_PR_DRAFT` — whether created PRs should be drafts.
-- `MINIONS_GITHUB_PR_REQUIRE_CLEAN_WORKTREE` — if true, github-pr preflight requires a clean worktree.
+- `MINIONS_GITHUB_PR_REQUIRE_CLEAN_WORKTREE` — if true, github-pr source-repo preflight requires a clean main worktree before Minions creates the isolated run worktree. Delivery preflight runs inside the isolated worktree and never blocks on execution-created dirty state. `.tmp/**` runtime artifacts are ignored by cleanliness enforcement.
 
 ## Behavior
 
@@ -33,7 +33,10 @@ Use these environment variables to configure runtime:
   - analysis: `<MINIONS_ANALYSIS_RESULT>...</MINIONS_ANALYSIS_RESULT>`
   - execution: `<MINIONS_EXECUTION_RESULT>...</MINIONS_EXECUTION_RESULT>`
 - If Pi exits successfully but does not return a parseable tagged contract, the runner reports failure and Minions falls back to its existing recovery path.
-- For `github-pr` delivery, Minions now runs preflight checks for `gh`, GitHub auth, git worktree presence, origin remote, and optionally clean-worktree enforcement before attempting PR publication.
+- For `local-git` and `github-pr` delivery, Minions now creates a fresh git worktree per run and executes all repository mutations there, leaving the main repo path unchanged.
+- The execution/environment branch is created during environment setup. It is tracked separately from `delivery.branch` semantics: branch existence no longer implies delivery eligibility, because validation and publication gates still decide where delivery stops.
+- For `github-pr` delivery, Minions runs phase-aware preflight checks: run-start checks the source repository for `gh`, GitHub auth, git worktree presence, origin remote, and optional clean-worktree enforcement before the isolated worktree is created; delivery checks run inside the isolated worktree before PR publication without re-enforcing worktree cleanliness.
+- Structured run data now includes environment/worktree metadata, a single effective repository path, and structured `delivery.stopPoint` records so operators can see exactly where PR delivery stopped.
 
 ## Provider labels
 

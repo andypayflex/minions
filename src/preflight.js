@@ -22,6 +22,28 @@ function runExecFile(command, args, options = {}) {
   });
 }
 
+export function isRuntimeArtifactPath(filePath) {
+  const normalized = String(filePath || "").trim().replace(/\\/g, "/");
+  return normalized === ".tmp" || normalized.startsWith(".tmp/");
+}
+
+export function parseGitStatusEntries(stdout = "") {
+  return String(stdout || "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => ({
+      raw: line,
+      path: line.slice(3),
+      indexStatus: line[0],
+      workTreeStatus: line[1],
+    }));
+}
+
+export function filterRuntimeArtifactStatusEntries(entries = []) {
+  return entries.filter((entry) => !isRuntimeArtifactPath(entry?.path));
+}
+
 export class GitHubPrPreflight {
   constructor(options = {}) {
     this.exec = options.exec || runExecFile;
@@ -31,7 +53,24 @@ export class GitHubPrPreflight {
     this.requireCleanWorktree = options.requireCleanWorktree ?? true;
   }
 
+  async checkRunStart(repositoryPath, options = {}) {
+    return this.#check(repositoryPath, {
+      requireCleanWorktree: options.requireCleanWorktree ?? this.requireCleanWorktree,
+    });
+  }
+
+  async checkDelivery(repositoryPath, options = {}) {
+    return this.#check(repositoryPath, {
+      requireCleanWorktree: options.requireCleanWorktree ?? false,
+    });
+  }
+
   async check(repositoryPath) {
+    return this.checkRunStart(repositoryPath);
+  }
+
+  async #check(repositoryPath, options = {}) {
+    const requireCleanWorktree = options.requireCleanWorktree ?? true;
     const checks = [];
     const add = (name, ok, detail = null) => checks.push({ name, ok, detail });
 
@@ -69,15 +108,27 @@ export class GitHubPrPreflight {
       add("git-origin-remote", false, error.message);
     }
 
-    try {
-      const result = await this.exec(this.gitCommand, ["status", "--short"], {
-        cwd: repositoryPath,
-        env: this.env,
-      });
-      const clean = result.stdout.trim() === "";
-      add("git-worktree-clean", this.requireCleanWorktree ? clean : true, clean ? "clean" : "dirty but allowed");
-    } catch (error) {
-      add("git-worktree-clean", false, error.message);
+    if (requireCleanWorktree) {
+      try {
+        const result = await this.exec(this.gitCommand, ["status", "--short"], {
+          cwd: repositoryPath,
+          env: this.env,
+        });
+        const entries = parseGitStatusEntries(result.stdout);
+        const blockingEntries = filterRuntimeArtifactStatusEntries(entries);
+        const clean = blockingEntries.length === 0;
+        add(
+          "git-worktree-clean",
+          clean,
+          clean
+            ? "clean"
+            : blockingEntries.length === entries.length
+              ? "dirty"
+              : "dirty (runtime artifacts ignored)",
+        );
+      } catch (error) {
+        add("git-worktree-clean", false, error.message);
+      }
     }
 
     const failedChecks = checks.filter((entry) => !entry.ok).map((entry) => entry.name);

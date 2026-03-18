@@ -28,21 +28,21 @@
           <form id="task-form">
             <label>
               <span>Title</span>
-              <input name="title" value="Improve the empty states for tasks and runs" required />
+              <input name="title" value="Create a tiny docs-only PR to verify the end-to-end GitHub flow" required />
             </label>
             <label>
               <span>Objective</span>
-              <textarea name="objective" rows="3" required>Make the dashboard feel more intentional when there are no tasks or runs by replacing the plain empty-state text with clearer guidance and a better visual treatment.</textarea>
+              <textarea name="objective" rows="3" required>Make a minimal documentation-only change that is safe to review and merge so we can validate the full Minions flow from task creation through execution and GitHub pull request delivery.</textarea>
             </label>
             <label>
               <span>Constraints</span>
-              <textarea name="constraints" rows="3">keep the change small
-prefer touching only public/app.js and public/styles.css
-do not change API routes or server behavior</textarea>
+              <textarea name="constraints" rows="3">limit the change to a tiny docs-only edit
+avoid application code, tests, build config, and API changes
+produce the smallest safe GitHub PR that proves the end-to-end flow works</textarea>
             </label>
             <label>
               <span>Expected Outcome</span>
-              <input name="expectedOutcome" value="the UI shows more polished empty states and the run produces a real GitHub PR" required />
+              <input name="expectedOutcome" value="a tiny documentation-only GitHub PR is opened successfully as an end-to-end delivery test" required />
             </label>
             <label>
               <span>Repository</span>
