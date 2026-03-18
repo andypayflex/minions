@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 function runExecFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -36,17 +39,90 @@ export async function ensureLocalGitRepository(repositoryPath) {
   }
 }
 
+export async function readCurrentBranch(repositoryPath) {
+  await ensureLocalGitRepository(repositoryPath);
+  const result = await runGit(repositoryPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return result.stdout.trim();
+}
+
+export async function resolveGitCommonDir(repositoryPath) {
+  await ensureLocalGitRepository(repositoryPath);
+  const result = await runGit(repositoryPath, ["rev-parse", "--git-common-dir"]);
+  return path.resolve(repositoryPath, result.stdout.trim());
+}
+
 export async function createLocalDeliveryBranch(repositoryPath, branchName) {
   await ensureLocalGitRepository(repositoryPath);
 
-  const baseRefResult = await runGit(repositoryPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const baseRef = baseRefResult.stdout.trim();
+  const baseRef = await readCurrentBranch(repositoryPath);
   await runGit(repositoryPath, ["checkout", "-b", branchName]);
 
   return {
     name: branchName,
     baseRef,
   };
+}
+
+export async function ensureLocalBranch(repositoryPath, branchName) {
+  await ensureLocalGitRepository(repositoryPath);
+  const baseRef = await readCurrentBranch(repositoryPath);
+  const existing = await runGit(repositoryPath, ["branch", "--list", branchName]);
+
+  if (existing.stdout.trim()) {
+    await runGit(repositoryPath, ["checkout", branchName]);
+    return {
+      name: branchName,
+      baseRef,
+      existed: true,
+    };
+  }
+
+  await runGit(repositoryPath, ["checkout", "-b", branchName]);
+  return {
+    name: branchName,
+    baseRef,
+    existed: false,
+  };
+}
+
+export async function createRunWorktree(sourceRepositoryPath, branchName, options = {}) {
+  await ensureLocalGitRepository(sourceRepositoryPath);
+  const commonDir = await resolveGitCommonDir(sourceRepositoryPath);
+  const worktreeRoot = options.worktreeRoot || path.join(commonDir, "minions-worktrees");
+  await fs.mkdir(worktreeRoot, { recursive: true });
+
+  const worktreePath = await fs.mkdtemp(path.join(worktreeRoot, "run-"));
+  const sourceBranch = await readCurrentBranch(sourceRepositoryPath);
+
+  try {
+    await runGit(sourceRepositoryPath, ["worktree", "add", "-b", branchName, worktreePath]);
+  } catch (error) {
+    await fs.rm(worktreePath, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    path: worktreePath,
+    branchName,
+    sourceRepositoryPath,
+    sourceBranch,
+    commonDir,
+    createdAt: new Date().toISOString(),
+    cleanupStatus: "pending",
+  };
+}
+
+export async function removeRunWorktree(worktreePath) {
+  if (!worktreePath) {
+    return;
+  }
+
+  try {
+    await runGit(worktreePath, ["worktree", "remove", "--force", worktreePath]);
+  } catch (error) {
+    await fs.rm(worktreePath, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function readWorkingTreeStatus(repositoryPath) {
@@ -93,8 +169,8 @@ export async function diffWorktreePathsFromBaseline(repositoryPath, baseline) {
   const baselinePathSet = new Set(Array.isArray(baseline?.pathSet) ? baseline.pathSet.filter(Boolean) : []);
   const currentPathSet = new Set(status.entries.map((entry) => entry.path).filter(Boolean));
   const currentEntries = status.entries;
-  const attributablePaths = [...currentPathSet].filter((path) => !baselinePathSet.has(path));
-  const preExistingPaths = [...currentPathSet].filter((path) => baselinePathSet.has(path));
+  const attributablePaths = [...currentPathSet].filter((filePath) => !baselinePathSet.has(filePath));
+  const preExistingPaths = [...currentPathSet].filter((filePath) => baselinePathSet.has(filePath));
 
   return {
     clean: status.clean,

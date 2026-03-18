@@ -464,6 +464,8 @@ test("Stories 6.1 through 6.4 register capabilities, onboard targets, expose str
   const structured = platform.getStructuredRunData(runId, { role: "internal-consumer" });
   assert.equal(structured.ok, true);
   assert.equal(structured.data.canonicalRunRecord, runId);
+  assert.equal("environment" in structured.data.states, true);
+  assert.equal("effectiveRepositoryPath" in structured.data.repository, true);
 
   const deniedStructured = platform.getStructuredRunData(runId, { role: "guest" });
   assert.equal(deniedStructured.ok, false);
