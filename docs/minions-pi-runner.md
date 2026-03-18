@@ -37,6 +37,7 @@ Use these environment variables to configure runtime:
 - The execution/environment branch is created during environment setup. It is tracked separately from `delivery.branch` semantics: branch existence no longer implies delivery eligibility, because validation and publication gates still decide where delivery stops.
 - For `github-pr` delivery, Minions runs phase-aware preflight checks: run-start checks the source repository for `gh`, GitHub auth, git worktree presence, origin remote, and optional clean-worktree enforcement before the isolated worktree is created; delivery checks run inside the isolated worktree before PR publication without re-enforcing worktree cleanliness.
 - Structured run data now includes environment/worktree metadata, a single effective repository path, and structured `delivery.stopPoint` records so operators can see exactly where PR delivery stopped.
+- A successful docs-only `github-pr` run usefully validates the GitHub PR delivery path itself, but it should be treated as delivery plumbing coverage rather than broad execution-path coverage for code-changing tasks.
 
 ## Provider labels
 
