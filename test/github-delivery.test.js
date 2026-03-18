@@ -114,6 +114,15 @@ test("platform github-pr delivery publishes a PR through the configured runner",
 
   try {
     const platform = new MinionsPlatform({
+      githubPrPreflight: {
+        async check() {
+          return {
+            ok: true,
+            checks: [],
+            failedChecks: [],
+          };
+        },
+      },
       githubDeliveryRunner: {
         async publishPullRequest(options) {
           return {

@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Pi Coding Agent extension playground",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "yaml": "^2.8.0"
   }

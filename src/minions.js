@@ -1,5 +1,6 @@
 import { analyzeLocalRepositoryTarget } from "./local-repository.js";
 import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
+import { createGitHubPrPreflightFromEnv } from "./preflight.js";
 import {
   captureWorktreeBaseline,
   createLocalDeliveryBranch,
@@ -150,6 +151,8 @@ export class MinionsPlatform {
     this.executionRunner = config.executionRunner || null;
     this.executionTimeoutMs = Number(config.executionTimeoutMs || 90000);
     this.githubDeliveryRunner = config.githubDeliveryRunner || createGitHubDeliveryRunnerFromEnv();
+    this.githubPrPreflight = config.githubPrPreflight || createGitHubPrPreflightFromEnv();
+    this.orchestrationMode = config.orchestrationMode || "single-runner";
     this.sequence = new Map();
 
     this.approvedInitiationPaths = new Set(
@@ -1391,28 +1394,30 @@ export class MinionsPlatform {
 
     let result;
     try {
+      const executionPacket = {
+        task: {
+          id: task.id,
+          title: task.title,
+          objective: task.objective,
+          constraints: clone(task.constraints),
+          expectedOutcome: task.expectedOutcome,
+        },
+        repository: {
+          repositoryId: target.repositoryId,
+          repositoryPath: target.repositoryPath,
+          metadata: clone(run.preparation.repositoryContext?.metadata || target.metadata || {}),
+        },
+        context: {
+          workingContext: clone(run.preparation.workingContext || {}),
+          analysis: clone(run.preparation.analysis || {}),
+          relevantFiles: clone((run.preparation.relevance?.rankedFiles || []).slice(0, 12)),
+          validationSteps: clone(run.preparation.repositoryContext?.validationSteps || target.validationSteps || []),
+          relatedWork: clone(run.preparation.relatedWork?.items || []),
+        },
+      };
+      const runtimeExecutor = target.orchestrator || this.executionRunner;
       result = await withTimeout(
-        this.executionRunner.run({
-          task: {
-            id: task.id,
-            title: task.title,
-            objective: task.objective,
-            constraints: clone(task.constraints),
-            expectedOutcome: task.expectedOutcome,
-          },
-          repository: {
-            repositoryId: target.repositoryId,
-            repositoryPath: target.repositoryPath,
-            metadata: clone(run.preparation.repositoryContext?.metadata || target.metadata || {}),
-          },
-          context: {
-            workingContext: clone(run.preparation.workingContext || {}),
-            analysis: clone(run.preparation.analysis || {}),
-            relevantFiles: clone((run.preparation.relevance?.rankedFiles || []).slice(0, 12)),
-            validationSteps: clone(run.preparation.repositoryContext?.validationSteps || target.validationSteps || []),
-            relatedWork: clone(run.preparation.relatedWork?.items || []),
-          },
-        }),
+        runtimeExecutor.run(executionPacket),
         this.executionTimeoutMs,
         `agent runner timed out after ${this.executionTimeoutMs}ms`,
       );
@@ -1478,6 +1483,8 @@ export class MinionsPlatform {
       runner: result.provider || null,
       provider: result.modelProvider || null,
       backend: result.provider || null,
+      orchestrationMode: this.orchestrationMode,
+      orchestrated: Boolean(result.orchestrated),
       exitCode: result.exitCode,
       outcome: finalPayload?.outcome || (result.ok ? "completed" : "failed"),
       summary: finalSummary,
@@ -2048,6 +2055,17 @@ export class MinionsPlatform {
       }
 
       try {
+        if (target.deliveryMode === "github-pr") {
+          const preflight = await this.githubPrPreflight.check(target.repositoryPath);
+          this._recordLedger(run, "github-pr-preflight-checked", preflight, preflight.ok ? "autonomous" : "blocked");
+          if (!preflight.ok) {
+            return createResult(false, {
+              reason: "github-pr preflight checks failed",
+              preflight,
+            });
+          }
+        }
+
         const commit = await createLocalDeliveryCommit(
           target.repositoryPath,
           `Minions: ${task.title}`,

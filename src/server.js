@@ -6,20 +6,23 @@ import { fileURLToPath } from "node:url";
 import { createExecutionRunnerFromEnv } from "./agent-runner.js";
 import { createAzureDevOpsClientFromEnv, mapAzureWorkItemToTaskPayload } from "./azure-devops.js";
 import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
+import { createGsdOrchestratorFromEnv } from "./gsd-orchestrator.js";
 import { MinionsPlatform } from "./minions.js";
+import { createGitHubPrPreflightFromEnv } from "./preflight.js";
 import { inferSequenceSeedsFromRepository } from "./repository-sequence.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.resolve(__dirname, "../public");
 
-function seedPlatform(platform) {
+function seedPlatform(platform, runtime = {}) {
   platform.onboardSupportedTarget({
     repositoryId: "repo/minions-app",
     teamId: "team-core",
     repositoryPath: process.env.MINIONS_DEFAULT_REPOSITORY_PATH || process.cwd(),
     executionMode: process.env.MINIONS_EXECUTION_MODE || "simulated",
     deliveryMode: process.env.MINIONS_DELIVERY_MODE || "simulated",
+    orchestrator: runtime.orchestrator || null,
     metadata: {
       language: "javascript",
       defaultBranch: "main",
@@ -162,14 +165,26 @@ async function serveStatic(reqPath, res) {
 
 export function createApp(options = {}) {
   const repositoryPath = process.env.MINIONS_DEFAULT_REPOSITORY_PATH || process.cwd();
+  const executionMode = options.executionMode || process.env.MINIONS_EXECUTION_MODE || "simulated";
+  const orchestrationMode = options.orchestrationMode || process.env.MINIONS_ORCHESTRATION_MODE || "single-runner";
+  const deliveryMode = options.deliveryMode || process.env.MINIONS_DELIVERY_MODE || "simulated";
+  const executionRunner = options.executionRunner || createExecutionRunnerFromEnv({ executionMode });
+  const orchestrator =
+    options.orchestrator ||
+    createGsdOrchestratorFromEnv({
+      orchestrationMode,
+      executionRunner,
+    });
   const platform = new MinionsPlatform({
-    executionRunner: options.executionRunner || createExecutionRunnerFromEnv(),
+    executionRunner,
     executionTimeoutMs: options.executionTimeoutMs || Number(process.env.MINIONS_EXECUTION_TIMEOUT_MS || 90000),
-    githubDeliveryRunner: options.githubDeliveryRunner || createGitHubDeliveryRunnerFromEnv(),
+    githubDeliveryRunner: options.githubDeliveryRunner || createGitHubDeliveryRunnerFromEnv({ deliveryMode }),
+    githubPrPreflight: options.githubPrPreflight || createGitHubPrPreflightFromEnv(),
+    orchestrationMode,
     sequenceSeeds: options.sequenceSeeds || inferSequenceSeedsFromRepository(repositoryPath),
   });
   const azureClient = options.azureClient || createAzureDevOpsClientFromEnv();
-  seedPlatform(platform);
+  seedPlatform(platform, { orchestrator });
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -177,7 +192,15 @@ export function createApp(options = {}) {
       const { pathname } = url;
 
       if (pathname === "/api/health" && req.method === "GET") {
-        json(res, 200, { ok: true, service: "minions-ui-api" });
+        json(res, 200, {
+          ok: true,
+          service: "minions-ui-api",
+          runtime: {
+            executionMode,
+            orchestrationMode,
+            deliveryMode,
+          },
+        });
         return;
       }
 
@@ -194,6 +217,7 @@ export function createApp(options = {}) {
             teamId: target.teamId,
             repositoryPath: target.repositoryPath,
             executionMode: target.executionMode,
+            orchestrationMode,
             deliveryMode: target.deliveryMode,
             metadata: target.metadata,
           })),
@@ -334,4 +358,7 @@ export async function startServer({ port = Number(process.env.PORT || 3000), hos
 if (process.argv[1] === __filename) {
   const { port, host } = await startServer();
   console.log(`Minions server running on http://${host}:${port}`);
+  console.log(
+    `Runtime modes: execution=${process.env.MINIONS_EXECUTION_MODE || "simulated"} orchestration=${process.env.MINIONS_ORCHESTRATION_MODE || "single-runner"} delivery=${process.env.MINIONS_DELIVERY_MODE || "simulated"}`,
+  );
 }
