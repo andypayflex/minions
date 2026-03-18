@@ -55,6 +55,10 @@ const FINAL_RESPONSE_SCHEMA = {
   },
 };
 
+const RUNNER_PROVIDER = "pi-rpc";
+const ANALYSIS_TAG = "MINIONS_ANALYSIS_RESULT";
+const EXECUTION_TAG = "MINIONS_EXECUTION_RESULT";
+
 function formatList(items, fallback = "none") {
   if (!Array.isArray(items) || items.length === 0) {
     return fallback;
@@ -72,7 +76,69 @@ function parseJsonFile(content) {
   return JSON.parse(trimmed);
 }
 
-export function buildCodexAnalysisPrompt(packet) {
+function extractTaggedJson(text, tag) {
+  const source = String(text || "");
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`, "g");
+  let match = null;
+  for (const candidate of source.matchAll(pattern)) {
+    match = candidate;
+  }
+
+  if (!match) {
+    return null;
+  }
+
+  const payload = String(match[1] || "").trim();
+  if (!payload) {
+    return null;
+  }
+
+  return JSON.parse(payload);
+}
+
+function collectTextContent(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => collectTextContent(item)).filter(Boolean).join("\n");
+  }
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  if (typeof value.text === "string") {
+    return value.text;
+  }
+
+  if (Array.isArray(value.content)) {
+    return value.content.map((item) => collectTextContent(item)).filter(Boolean).join("\n");
+  }
+
+  return "";
+}
+
+function tryParseTaggedContract(text, tag) {
+  try {
+    return extractTaggedJson(text, tag);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRpcResponsePayload(event) {
+  const message = event?.message;
+  if (message && typeof message === "object") {
+    return message;
+  }
+
+  return event;
+}
+
+export function buildAnalysisPrompt(packet) {
   const repositoryFiles = (packet.repository?.files || []).slice(0, 200).map((file) =>
     [file.path, file.area ? `area=${file.area}` : null, file.type ? `type=${file.type}` : null]
       .filter(Boolean)
@@ -91,6 +157,8 @@ export function buildCodexAnalysisPrompt(packet) {
     "You are investigating a Minions repository task before execution.",
     "Your job is to classify the task, identify likely repository surfaces, and decide whether the task should proceed.",
     "Do not make edits. Inspect mentally from the provided repo summary only.",
+    "Return your final answer with one tagged JSON block and no extra formatting around the tags.",
+    `Wrap the final JSON object in <${ANALYSIS_TAG}>...</${ANALYSIS_TAG}>.`,
     "",
     "Task",
     `- taskId: ${packet.task.id}`,
@@ -127,7 +195,7 @@ export function buildCodexAnalysisPrompt(packet) {
   ].join("\n");
 }
 
-export function buildCodexExecutionPrompt(packet) {
+export function buildExecutionPrompt(packet) {
   const relevantFiles = (packet.context?.relevantFiles || []).map((file) =>
     [file.path, file.area ? `area=${file.area}` : null, file.type ? `type=${file.type}` : null]
       .filter(Boolean)
@@ -146,6 +214,8 @@ export function buildCodexExecutionPrompt(packet) {
     "You are executing a Minions autonomous repository task.",
     "Work inside the provided repository only and stay within the stated task scope.",
     "If you cannot complete the task safely, return outcome=blocked or outcome=failed rather than guessing.",
+    "Return your final answer with one tagged JSON block and no extra formatting around the tags.",
+    `Wrap the final JSON object in <${EXECUTION_TAG}>...</${EXECUTION_TAG}>.`,
     "",
     "Task",
     `- taskId: ${packet.task.id}`,
@@ -182,120 +252,192 @@ export function buildCodexExecutionPrompt(packet) {
     "- Make the smallest coherent implementation that satisfies the task.",
     "- Run relevant repository validation commands when appropriate.",
     "- End with a short final summary that names the key files you changed and any validation you ran.",
+    "",
+    "Return JSON with:",
+    '- outcome: "completed", "partial", "blocked", or "failed"',
+    "- summary: concise implementation result",
+    "- changedFiles: repository-relative changed file paths",
+    "- commandsRun: relevant validation or shell commands that were run",
+    "- notes: short operator-facing caveats or follow-ups",
   ].join("\n");
 }
 
-export class CodexCliRunner {
+export class PiRpcRunner {
   constructor(options = {}) {
-    this.command = options.command || "codex";
+    this.command = options.command || "pi";
+    this.provider = options.provider || null;
     this.model = options.model || null;
-    this.sandbox = options.sandbox || "workspace-write";
-    this.fullAuto = options.fullAuto ?? this.sandbox === "workspace-write";
+    this.modelProvider = options.modelProvider || this.provider || null;
+    this.sessionDir = options.sessionDir || null;
+    this.extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
     this.env = options.env || process.env;
     this.spawnImpl = options.spawnImpl || spawn;
     this.analysisResponseSchema = options.analysisResponseSchema || ANALYSIS_RESPONSE_SCHEMA;
     this.finalResponseSchema = options.finalResponseSchema || FINAL_RESPONSE_SCHEMA;
   }
 
-  async _runWithSchema({ packet, prompt, schema }) {
-    if (!packet?.repository?.repositoryPath) {
-      throw new Error("repository.repositoryPath is required for Codex CLI execution");
-    }
+  _buildArgs(packet) {
+    const args = ["--mode", "rpc", "--no-session"];
 
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "minions-codex-"));
-    const schemaPath = path.join(tempDir, "final-response.schema.json");
-    const outputPath = path.join(tempDir, "final-response.json");
-    if (schema) {
-      await fs.writeFile(schemaPath, JSON.stringify(schema, null, 2));
-    }
-
-    const args = [
-      "exec",
-      "-",
-      "--json",
-      ...(this.fullAuto ? ["--full-auto"] : []),
-      "--skip-git-repo-check",
-      "--ephemeral",
-      ...(this.fullAuto ? [] : ["--sandbox", this.sandbox]),
-      "--output-last-message",
-      outputPath,
-      "--cd",
-      packet.repository.repositoryPath,
-    ];
-
-    if (schema) {
-      args.splice(args.indexOf("--output-last-message"), 0, "--output-schema", schemaPath);
+    if (this.provider) {
+      args.push("--provider", this.provider);
     }
 
     if (this.model) {
       args.push("--model", this.model);
     }
 
+    if (this.sessionDir) {
+      args.push("--session-dir", this.sessionDir);
+    }
+
+    args.push(...this.extraArgs);
+    return args;
+  }
+
+  async _runPrompt({ packet, prompt, tag, schema }) {
+    if (!packet?.repository?.repositoryPath) {
+      throw new Error("repository.repositoryPath is required for Pi RPC execution");
+    }
+
+    const args = this._buildArgs(packet);
     let stdout = "";
     let stderr = "";
+    let assistantText = "";
+    const events = [];
+    const responses = [];
+    let exitCode = null;
 
-    try {
-      const exitCode = await new Promise((resolve, reject) => {
-        const child = this.spawnImpl(this.command, args, {
-          cwd: packet.repository.repositoryPath,
-          env: this.env,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+    const child = this.spawnImpl(this.command, args, {
+      cwd: packet.repository.repositoryPath,
+      env: this.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
-        child.stdout?.on("data", (chunk) => {
-          stdout += chunk.toString();
-        });
-        child.stderr?.on("data", (chunk) => {
-          stderr += chunk.toString();
-        });
-        child.on("error", reject);
-        child.on("close", resolve);
-        child.stdin?.end(prompt);
-      });
+    let resolved = false;
+    const lines = [];
 
-      let final = null;
-      try {
-        const output = await fs.readFile(outputPath, "utf8");
-        if (schema) {
-          final = parseJsonFile(output);
-        } else {
-          try {
-            final = parseJsonFile(output);
-          } catch {
-            final = output.trim();
-          }
-        }
-      } catch {
-        final = null;
+    const handleStdoutChunk = (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      lines.push(text);
+      const buffered = lines.join("");
+      const records = buffered.split("\n");
+      lines.length = 0;
+      const trailing = records.pop();
+      if (trailing) {
+        lines.push(trailing);
       }
 
-      const ok = exitCode === 0 && (schema ? Boolean(final) : true);
-      return {
-        ok,
-        exitCode,
-        stdout,
-        stderr,
-        final,
-        prompt,
-      };
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
+      for (const rawRecord of records) {
+        const record = rawRecord.endsWith("\r") ? rawRecord.slice(0, -1) : rawRecord;
+        if (!record.trim()) {
+          continue;
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(record);
+        } catch {
+          continue;
+        }
+
+        if (payload?.type === "response") {
+          responses.push(payload);
+          continue;
+        }
+
+        events.push(payload);
+
+        if (payload?.type === "message_end") {
+          const message = normalizeRpcResponsePayload(payload);
+          if (message?.role === "assistant") {
+            assistantText = collectTextContent(message.content || message);
+          }
+        }
+
+        if (payload?.type === "turn_end") {
+          const message = normalizeRpcResponsePayload(payload);
+          const turnText = collectTextContent(message?.content || payload?.message?.content || "");
+          if (turnText) {
+            assistantText = turnText;
+          }
+        }
+
+        if (payload?.type === "agent_end" && Array.isArray(payload.messages)) {
+          for (let index = payload.messages.length - 1; index >= 0; index -= 1) {
+            const candidate = payload.messages[index];
+            if (candidate?.role === "assistant") {
+              const textContent = collectTextContent(candidate.content || candidate);
+              if (textContent) {
+                assistantText = textContent;
+                break;
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const exit = await new Promise((resolve, reject) => {
+      child.stdout?.on("data", handleStdoutChunk);
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        exitCode = code;
+        if (!resolved && lines.length > 0) {
+          handleStdoutChunk("\n");
+        }
+        resolved = true;
+        resolve(code);
+      });
+
+      child.stdin?.write(`${JSON.stringify({ id: "prompt-1", type: "prompt", message: prompt })}\n`);
+      child.stdin?.write(`${JSON.stringify({ id: "assistant-text-1", type: "get_last_assistant_text" })}\n`);
+      child.stdin?.end();
+    });
+
+    const assistantResponse = responses.find((response) => response?.id === "assistant-text-1");
+    const reportedAssistantText = assistantResponse?.data?.text;
+    if (typeof reportedAssistantText === "string" && reportedAssistantText.trim()) {
+      assistantText = reportedAssistantText;
     }
+
+    const final = tryParseTaggedContract(assistantText, tag) || tryParseTaggedContract(stdout, tag);
+    const ok = exit === 0 && Boolean(final);
+    return {
+      ok,
+      exitCode,
+      stdout,
+      stderr,
+      final,
+      prompt,
+      provider: RUNNER_PROVIDER,
+      modelProvider: this.modelProvider,
+      events,
+      responses,
+      assistantText,
+      expectedSchema: schema,
+    };
   }
 
   async analyze(packet) {
-    return this._runWithSchema({
+    return this._runPrompt({
       packet,
-      prompt: buildCodexAnalysisPrompt(packet),
+      prompt: buildAnalysisPrompt(packet),
+      tag: ANALYSIS_TAG,
       schema: this.analysisResponseSchema,
     });
   }
 
   async run(packet) {
-    return this._runWithSchema({
+    return this._runPrompt({
       packet,
-      prompt: buildCodexExecutionPrompt(packet),
-      schema: null,
+      prompt: buildExecutionPrompt(packet),
+      tag: EXECUTION_TAG,
+      schema: this.finalResponseSchema,
     });
   }
 }
@@ -307,15 +449,20 @@ export function createExecutionRunnerFromEnv(overrides = {}) {
     return null;
   }
 
-  return new CodexCliRunner({
-    command: overrides.command || process.env.MINIONS_CODEX_COMMAND || "codex",
-    model: overrides.model || process.env.MINIONS_CODEX_MODEL || null,
-    sandbox: overrides.sandbox || process.env.MINIONS_CODEX_SANDBOX || "workspace-write",
-    fullAuto:
-      overrides.fullAuto ??
-      (process.env.MINIONS_CODEX_FULL_AUTO === undefined
-        ? undefined
-        : process.env.MINIONS_CODEX_FULL_AUTO !== "false"),
+  return new PiRpcRunner({
+    command: overrides.command || process.env.MINIONS_PI_COMMAND || "pi",
+    provider: overrides.provider || process.env.MINIONS_PI_PROVIDER || null,
+    modelProvider: overrides.modelProvider || process.env.MINIONS_PI_PROVIDER || null,
+    model: overrides.model || process.env.MINIONS_PI_MODEL || null,
+    sessionDir: overrides.sessionDir || process.env.MINIONS_PI_SESSION_DIR || null,
+    extraArgs:
+      overrides.extraArgs ||
+      (process.env.MINIONS_PI_ARGS
+        ? process.env.MINIONS_PI_ARGS
+            .split(/\s+/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : []),
     spawnImpl: overrides.spawnImpl,
     env: overrides.env,
   });

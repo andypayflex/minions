@@ -1,6 +1,12 @@
 import { analyzeLocalRepositoryTarget } from "./local-repository.js";
 import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
-import { createLocalDeliveryBranch, createLocalDeliveryCommit, readWorkingTreeStatus } from "./local-git.js";
+import {
+  captureWorktreeBaseline,
+  createLocalDeliveryBranch,
+  createLocalDeliveryCommit,
+  diffWorktreePathsFromBaseline,
+  readWorkingTreeStatus,
+} from "./local-git.js";
 import path from "node:path";
 import { inferSequenceSeedsFromMemory, mergeSequenceSeeds } from "./repository-sequence.js";
 
@@ -1044,7 +1050,10 @@ export class MinionsPlatform {
 
         if (result?.ok && result.final) {
           analysis = {
-            provider: "codex-cli",
+            runner: result.provider || null,
+            backend: result.provider || null,
+            provider: result.modelProvider || null,
+            modelProvider: result.modelProvider || null,
             taskType: result.final.taskType || "code-change",
             shouldProceed: result.final.shouldProceed !== false,
             summary: result.final.summary || "AI task analysis completed",
@@ -1084,7 +1093,10 @@ export class MinionsPlatform {
 
     run.preparation.analysis = analysis;
     this._recordLedger(run, "task-analysis-completed", {
-      provider: analysis.provider,
+      runner: analysis.runner || null,
+      backend: analysis.backend || null,
+      provider: analysis.provider || null,
+      modelProvider: analysis.modelProvider || null,
       taskType: analysis.taskType,
       shouldProceed: analysis.shouldProceed,
       relevantFileCount: analysis.relevantFiles.length,
@@ -1447,6 +1459,8 @@ export class MinionsPlatform {
 
     if (!result.ok && target.repositoryPath) {
       const recovered = await this._recoverExecutionFromWorktree(run, target, {
+        provider: result.provider || null,
+        modelProvider: result.modelProvider || null,
         summary: finalSummary,
         failureReason,
         stdout: result.stdout || "",
@@ -1461,7 +1475,9 @@ export class MinionsPlatform {
     }
 
     run.execution.agentRun = {
-      provider: "codex-cli",
+      runner: result.provider || null,
+      provider: result.modelProvider || null,
+      backend: result.provider || null,
       exitCode: result.exitCode,
       outcome: finalPayload?.outcome || (result.ok ? "completed" : "failed"),
       summary: finalSummary,
@@ -1483,7 +1499,9 @@ export class MinionsPlatform {
         run,
         "agent-run-failed",
         {
-          provider: "codex-cli",
+          runner: result.provider || null,
+          provider: result.modelProvider || null,
+          backend: result.provider || null,
           exitCode: result.exitCode,
           outcome: run.execution.agentRun.outcome,
           reason: failureReason,
@@ -1503,7 +1521,7 @@ export class MinionsPlatform {
     run.execution.changes = changedFiles.map((filePath) => ({
       path: filePath,
       action: "modify",
-      summary: final.summary || `Updated ${filePath} via Codex CLI runner`,
+      summary: final.summary || `Updated ${filePath} via autonomous runner`,
     }));
     run.execution.currentWorkState = {
       changedFiles,
@@ -1515,7 +1533,9 @@ export class MinionsPlatform {
     run.hasAutonomousChanges = changedFiles.length > 0;
 
     this._recordLedger(run, "agent-run-completed", {
-      provider: "codex-cli",
+      runner: result.provider || null,
+      provider: result.modelProvider || null,
+      backend: result.provider || null,
       exitCode: result.exitCode,
       outcome: run.execution.agentRun.outcome,
       changedFiles,
@@ -1541,7 +1561,9 @@ export class MinionsPlatform {
     }
 
     run.execution.agentRun = {
-      provider: "codex-cli",
+      runner: fallback.provider || null,
+      provider: fallback.modelProvider || null,
+      backend: fallback.provider || null,
       exitCode: null,
       outcome: "completed",
       summary: fallback.summary || "Recovered execution result from repository worktree state.",
@@ -1571,7 +1593,9 @@ export class MinionsPlatform {
     run.hasAutonomousChanges = changedFiles.length > 0;
 
     this._recordLedger(run, "agent-run-recovered", {
-      provider: "codex-cli",
+      runner: fallback.provider || null,
+      provider: fallback.modelProvider || null,
+      backend: fallback.provider || null,
       changedFiles,
       reason: fallback.failureReason || "agent runner did not return a final result",
     });

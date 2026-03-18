@@ -69,6 +69,41 @@ export async function readWorkingTreeStatus(repositoryPath) {
   };
 }
 
+export async function readHeadSha(repositoryPath) {
+  await ensureLocalGitRepository(repositoryPath);
+  const result = await runGit(repositoryPath, ["rev-parse", "HEAD"]);
+  return result.stdout.trim();
+}
+
+export async function captureWorktreeBaseline(repositoryPath) {
+  const status = await readWorkingTreeStatus(repositoryPath);
+  const headSha = await readHeadSha(repositoryPath);
+  const pathSet = [...new Set(status.entries.map((entry) => entry.path).filter(Boolean))];
+
+  return {
+    capturedAt: new Date().toISOString(),
+    headSha,
+    entries: status.entries,
+    pathSet,
+  };
+}
+
+export async function diffWorktreePathsFromBaseline(repositoryPath, baseline) {
+  const status = await readWorkingTreeStatus(repositoryPath);
+  const baselinePathSet = new Set(Array.isArray(baseline?.pathSet) ? baseline.pathSet.filter(Boolean) : []);
+  const currentPathSet = new Set(status.entries.map((entry) => entry.path).filter(Boolean));
+  const currentEntries = status.entries;
+  const attributablePaths = [...currentPathSet].filter((path) => !baselinePathSet.has(path));
+  const preExistingPaths = [...currentPathSet].filter((path) => baselinePathSet.has(path));
+
+  return {
+    clean: status.clean,
+    currentEntries,
+    attributablePaths,
+    preExistingPaths,
+  };
+}
+
 export async function createLocalDeliveryCommit(repositoryPath, message, scopedFiles = []) {
   await ensureLocalGitRepository(repositoryPath);
 

@@ -5,24 +5,64 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildCodexAnalysisPrompt, buildCodexExecutionPrompt, CodexCliRunner } from "../src/agent-runner.js";
+import { buildAnalysisPrompt, buildExecutionPrompt, PiRpcRunner } from "../src/agent-runner.js";
 import { MinionsPlatform } from "../src/minions.js";
 
-function createMockSpawn(finalPayload) {
+function createRpcSpawn({ assistantText, exitCode = 0 }) {
   return (command, args) => {
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
+    child.stdinBuffer = "";
     child.stdin = {
-      end(input) {
-        child.stdinInput = String(input || "");
-        const outputPath = args[args.indexOf("--output-last-message") + 1];
-        fs.writeFile(outputPath, JSON.stringify(finalPayload, null, 2))
-          .then(() => {
-            child.stdout.emit("data", Buffer.from('{"type":"agent-message","delta":"working"}\n'));
-            child.emit("close", 0);
-          })
-          .catch((error) => child.emit("error", error));
+      write(input) {
+        child.stdinBuffer += String(input || "");
+      },
+      end(input = "") {
+        child.stdinBuffer += String(input || "");
+        const commands = child.stdinBuffer
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+
+        const promptCommand = commands.find((item) => item.type === "prompt");
+        const assistantTextCommand = commands.find((item) => item.type === "get_last_assistant_text");
+        child.promptMessage = promptCommand?.message || "";
+
+        queueMicrotask(() => {
+          child.stdout.emit(
+            "data",
+            Buffer.from(
+              `${JSON.stringify({ id: promptCommand?.id || "prompt-1", type: "response", command: "prompt", success: true })}\n`,
+            ),
+          );
+          child.stdout.emit(
+            "data",
+            Buffer.from(
+              `${JSON.stringify({
+                type: "message_end",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: assistantText }],
+                },
+              })}\n`,
+            ),
+          );
+          child.stdout.emit(
+            "data",
+            Buffer.from(
+              `${JSON.stringify({
+                id: assistantTextCommand?.id || "assistant-text-1",
+                type: "response",
+                command: "get_last_assistant_text",
+                success: true,
+                data: { text: assistantText },
+              })}\n`,
+            ),
+          );
+          child.emit("close", exitCode);
+        });
       },
     };
     child.command = command;
@@ -31,8 +71,8 @@ function createMockSpawn(finalPayload) {
   };
 }
 
-test("buildCodexExecutionPrompt includes task, repo, and file context", () => {
-  const prompt = buildCodexExecutionPrompt({
+test("buildExecutionPrompt includes task, repo, and file context", () => {
+  const prompt = buildExecutionPrompt({
     task: {
       id: "task-0001",
       title: "Fix intake flow",
@@ -57,10 +97,11 @@ test("buildCodexExecutionPrompt includes task, repo, and file context", () => {
   assert.match(prompt, /src\/intake\.js/);
   assert.match(prompt, /npm test/);
   assert.match(prompt, /Investigate ticket 55/);
+  assert.match(prompt, /MINIONS_EXECUTION_RESULT/);
 });
 
-test("buildCodexAnalysisPrompt includes repository summary and task framing", () => {
-  const prompt = buildCodexAnalysisPrompt({
+test("buildAnalysisPrompt includes repository summary and task framing", () => {
+  const prompt = buildAnalysisPrompt({
     task: {
       id: "task-0001",
       title: "Review repository structure",
@@ -84,20 +125,36 @@ test("buildCodexAnalysisPrompt includes repository summary and task framing", ()
   assert.match(prompt, /Repository File Summary/);
   assert.match(prompt, /src\/intake\.js/);
   assert.match(prompt, /taskType/);
+  assert.match(prompt, /MINIONS_ANALYSIS_RESULT/);
 });
 
-test("CodexCliRunner executes codex exec and parses structured output", async () => {
+test("PiRpcRunner executes pi RPC and parses structured output", async () => {
   let spawnedArgs = null;
-  const runner = new CodexCliRunner({
+  let promptMessage = null;
+  const assistantText = [
+    "Done.",
+    "<MINIONS_EXECUTION_RESULT>",
+    JSON.stringify({
+      outcome: "completed",
+      summary: "Updated intake implementation.",
+      changedFiles: ["src/intake.js", "test/intake.test.js"],
+      commandsRun: ["npm test"],
+      notes: ["Applied focused repository changes."],
+    }),
+    "</MINIONS_EXECUTION_RESULT>",
+  ].join("\n");
+
+  const runner = new PiRpcRunner({
     spawnImpl(command, args) {
       spawnedArgs = args;
-      return createMockSpawn({
-        outcome: "completed",
-        summary: "Updated intake implementation.",
-        changedFiles: ["src/intake.js", "test/intake.test.js"],
-        commandsRun: ["npm test"],
-        notes: ["Applied focused repository changes."],
-      })(command, args);
+      const spawnFn = createRpcSpawn({ assistantText });
+      const child = spawnFn(command, args);
+      const originalEnd = child.stdin.end.bind(child.stdin);
+      child.stdin.end = (input = "") => {
+        originalEnd(input);
+        promptMessage = child.promptMessage;
+      };
+      return child;
     },
   });
 
@@ -123,15 +180,18 @@ test("CodexCliRunner executes codex exec and parses structured output", async ()
 
   assert.equal(result.ok, true);
   assert.equal(result.exitCode, 0);
+  assert.equal(result.provider, "pi-rpc");
   assert.equal(result.final.summary, "Updated intake implementation.");
   assert.deepEqual(result.final.changedFiles, ["src/intake.js", "test/intake.test.js"]);
-  assert.equal(spawnedArgs.includes("--full-auto"), true);
-  assert.match(result.prompt, /Fix intake flow/);
+  assert.deepEqual(spawnedArgs.slice(0, 3), ["--mode", "rpc", "--no-session"]);
+  assert.match(promptMessage, /Fix intake flow/);
 });
 
-test("CodexCliRunner analyze executes codex exec and parses structured output", async () => {
-  const runner = new CodexCliRunner({
-    spawnImpl: createMockSpawn({
+test("PiRpcRunner analyze executes pi RPC and parses structured output", async () => {
+  const assistantText = [
+    "Analysis complete.",
+    "<MINIONS_ANALYSIS_RESULT>",
+    JSON.stringify({
       taskType: "documentation",
       shouldProceed: true,
       summary: "Update docs for the repository workflow.",
@@ -140,6 +200,11 @@ test("CodexCliRunner analyze executes codex exec and parses structured output", 
       testFiles: [],
       notes: ["No code edits are required beyond documentation."],
     }),
+    "</MINIONS_ANALYSIS_RESULT>",
+  ].join("\n");
+
+  const runner = new PiRpcRunner({
+    spawnImpl: createRpcSpawn({ assistantText }),
   });
 
   const result = await runner.analyze({
@@ -169,6 +234,36 @@ test("CodexCliRunner analyze executes codex exec and parses structured output", 
   assert.match(result.prompt, /Document workflow/);
 });
 
+test("PiRpcRunner falls back to failed result when tagged JSON is missing", async () => {
+  const runner = new PiRpcRunner({
+    spawnImpl: createRpcSpawn({ assistantText: "Plain assistant text without final contract." }),
+  });
+
+  const result = await runner.run({
+    task: {
+      id: "task-0001",
+      title: "Fix intake flow",
+      objective: "Implement the requested repository change",
+      constraints: ["keep tests passing"],
+      expectedOutcome: "working change with validation evidence",
+    },
+    repository: {
+      repositoryId: "repo/minions-app",
+      repositoryPath: process.cwd(),
+    },
+    context: {
+      relevantFiles: [],
+      validationSteps: [],
+      relatedWork: [],
+      workingContext: {},
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.final, null);
+  assert.equal(result.provider, "pi-rpc");
+});
+
 test("platform uses execution runner when repository target is configured for agent-runner mode", async () => {
   const repositoryPath = await fs.mkdtemp(path.join(os.tmpdir(), "minions-runner-target-"));
 
@@ -189,6 +284,7 @@ test("platform uses execution runner when repository target is configured for ag
         async run() {
           return {
             ok: true,
+            provider: "pi-rpc",
             exitCode: 0,
             stdout: "",
             stderr: "",
@@ -197,7 +293,7 @@ test("platform uses execution runner when repository target is configured for ag
               summary: "Updated feature implementation.",
               changedFiles: ["src/feature.js"],
               commandsRun: ["npm test"],
-              notes: ["Executed in codex runner"],
+              notes: ["Executed in pi rpc runner"],
             },
           };
         },
@@ -261,6 +357,8 @@ test("platform uses execution runner when repository target is configured for ag
     assert.equal(execution.ok, true);
     assert.deepEqual(execution.currentWorkState.changedFiles, ["src/feature.js"]);
     assert.deepEqual(execution.currentWorkState.commandsRun, ["npm test"]);
+    assert.equal(platform.runs.get(startup.runId).execution.agentRun.runner, "pi-rpc");
+    assert.equal(platform.runs.get(startup.runId).execution.agentRun.provider, null);
     assert.equal(platform.runs.get(startup.runId).execution.agentRun.summary, "Updated feature implementation.");
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
@@ -287,6 +385,7 @@ test("runAutonomousFlow uses AI task analysis so broad repo-analysis tasks do no
         async analyze() {
           return {
             ok: true,
+            provider: "pi-rpc",
             exitCode: 0,
             stdout: "",
             stderr: "",
@@ -304,6 +403,7 @@ test("runAutonomousFlow uses AI task analysis so broad repo-analysis tasks do no
         async run() {
           return {
             ok: true,
+            provider: "pi-rpc",
             exitCode: 0,
             stdout: "",
             stderr: "",
@@ -350,6 +450,9 @@ test("runAutonomousFlow uses AI task analysis so broad repo-analysis tasks do no
     assert.equal(result.ok, true);
 
     const run = platform.runs.get(result.runId);
+    assert.equal(run.preparation.analysis.runner, "pi-rpc");
+    assert.equal(run.preparation.analysis.backend, "pi-rpc");
+    assert.equal(run.preparation.analysis.provider, null);
     assert.equal(run.preparation.analysis.taskType, "documentation");
     assert.equal(run.preparation.finalOutcome.result, "ready");
     assert.deepEqual(run.preparation.relevance.rankedFiles.map((file) => file.path).slice(0, 2), [

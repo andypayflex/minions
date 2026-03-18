@@ -16,7 +16,7 @@ const runPollers = new Map();
 let followedRunId = null;
 
 runtimeModeNote.textContent =
-  "Runtime mode: agent-runner execution with github-pr delivery, so successful runs can open a real GitHub pull request.";
+  "Runtime mode: autonomous runner execution with github-pr delivery, so successful runs can open a real GitHub pull request.";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -174,17 +174,26 @@ function actionButton(label, handler, kind = "default") {
   return button;
 }
 
-function emptyState(eyebrow, title, message, hint) {
+function emptyState(eyebrow, title, message, hint, options = {}) {
+  const { variant = "default", bullets = [], accent = "•" } = options;
   const wrapper = document.createElement("section");
-  wrapper.className = "empty-state";
+  wrapper.className = `empty-state empty-state-${variant}`;
+  const bulletMarkup = bullets.length
+    ? `
+      <ul class="empty-state-list">
+        ${bullets.map((bullet) => `<li>${bullet}</li>`).join("")}
+      </ul>
+    `
+    : "";
   wrapper.innerHTML = `
     <div class="empty-state-mark" aria-hidden="true">
-      <span></span>
+      <span>${accent}</span>
     </div>
     <div class="empty-state-copy">
       <p class="empty-state-eyebrow">${eyebrow}</p>
       <h3>${title}</h3>
       <p>${message}</p>
+      ${bulletMarkup}
       <p class="empty-state-hint">${hint}</p>
     </div>
   `;
@@ -215,8 +224,17 @@ async function refreshDashboard() {
       emptyState(
         "Ready To Start",
         "No tasks in the queue",
-        "Create a task from the form above to define the objective, constraints, and expected outcome for the next delivery run.",
-        "A saved task becomes the launch point for the full autonomous flow.",
+        "Capture the next piece of work so the control room has a clear brief to execute against.",
+        "Once a task is saved, it becomes the launch point for the full autonomous flow.",
+        {
+          variant: "tasks",
+          accent: "→",
+          bullets: [
+            "Give the task a crisp title and objective.",
+            "Add constraints so the run stays inside the rails.",
+            "Set the expected outcome to define what success looks like.",
+          ],
+        },
       ),
     );
   }
@@ -264,8 +282,17 @@ async function refreshDashboard() {
       emptyState(
         "Waiting On Launch",
         "No runs have started",
-        "Launch a task to generate a live run with execution history, validation evidence, and delivery details.",
-        "Run records will appear here as soon as a task enters the flow.",
+        "The runway is clear. Start a task when you're ready to create a live execution record for the next delivery attempt.",
+        "Run records appear here automatically as soon as a task enters the flow.",
+        {
+          variant: "runs",
+          accent: "↗",
+          bullets: [
+            "Use Run Full Flow from a task card to kick things off.",
+            "Active runs will stream status updates into the inspector.",
+            "Completed runs keep their history, validation, and delivery details here.",
+          ],
+        },
       ),
     );
   }

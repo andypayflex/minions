@@ -1,0 +1,59 @@
+full:
+  - scout
+  - planner
+  - builder
+  - reviewer
+  - documenter
+  - red-team
+
+pi-pi:
+  - ext-expert
+  - theme-expert
+  - skill-expert
+  - config-expert
+  - tui-expert
+  - prompt-expert
+  - agent-expert
+
+gsd:
+  - gsd-project-researcher
+  - gsd-phase-researcher
+  - gsd-ui-researcher
+  - gsd-research-synthesizer
+  - gsd-planner
+  - gsd-roadmapper
+  - gsd-executor
+  - gsd-plan-checker
+  - gsd-integration-checker
+  - gsd-ui-checker
+  - gsd-verifier
+  - gsd-nyquist-auditor
+  - gsd-ui-auditor
+  - gsd-codebase-mapper
+  - gsd-debugger
+  - gsd-user-profiler
+
+gsd-planning:
+  - gsd-project-researcher
+  - gsd-phase-researcher
+  - gsd-research-synthesizer
+  - gsd-planner
+  - gsd-roadmapper
+  - gsd-plan-checker
+  - gsd-codebase-mapper
+  - gsd-user-profiler
+
+gsd-execution:
+  - gsd-executor
+  - gsd-verifier
+  - gsd-integration-checker
+  - gsd-nyquist-auditor
+  - gsd-debugger
+
+gsd-ui:
+  - gsd-ui-researcher
+  - gsd-ui-checker
+  - gsd-ui-auditor
+  - gsd-planner
+  - gsd-executor
+  - gsd-verifier

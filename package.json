@@ -1,12 +1,9 @@
 {
-  "name": "minions",
-  "version": "0.1.0",
+  "name": "pi-vs-cc",
   "private": true,
   "type": "module",
-  "description": "A minimal autonomous PR-generation platform model for the Minions story backlog.",
-  "scripts": {
-    "start": "node src/server.js",
-    "test": "node --test",
-    "demo": "node src/demo.js"
+  "description": "Pi Coding Agent extension playground",
+  "dependencies": {
+    "yaml": "^2.8.0"
   }
 }

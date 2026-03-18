@@ -18,4 +18,4 @@ modules:
     npmPackage: null
     repoUrl: null
 ides:
-  - codex
+  - pi
