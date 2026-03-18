@@ -347,6 +347,29 @@ test("Stories 4.1 through 4.6 validate runs, capture evidence, determine complet
   assert.equal(partialPlatform.runs.get(partialRunId).delivery.gateHistory.at(-1).eligible, false);
 });
 
+test("runAutonomousFlow blocks duplicate active runs and completed delivery reruns", async () => {
+  const platform = buildPlatform();
+  const taskId = submitScopedTask(platform);
+  const runId = prepareTaskForExecution(platform, taskId);
+  platform.startIsolatedRunEnvironment(taskId);
+  platform.executeRepositoryChanges(runId);
+
+  const duplicateActive = await platform.runAutonomousFlow(taskId);
+  assert.equal(duplicateActive.ok, false);
+  assert.equal(duplicateActive.reason, "task already has an active run in progress");
+  assert.equal(duplicateActive.runId, runId);
+
+  const deliveredPlatform = buildPlatform();
+  const delivered = createSuccessfulRun(deliveredPlatform);
+  deliveredPlatform._markRunDeliveredSuccessfully(deliveredPlatform.runs.get(delivered.runId));
+
+  const duplicateDelivered = await deliveredPlatform.runAutonomousFlow(delivered.taskId);
+  assert.equal(duplicateDelivered.ok, false);
+  assert.equal(duplicateDelivered.reason, "task already has a completed delivery run");
+  assert.equal(duplicateDelivered.runId, delivered.runId);
+  assert.equal(deliveredPlatform.runs.get(delivered.runId).currentOutcomeState, "successful");
+});
+
 test("Stories 5.1 through 5.3 classify failures, summarize them safely, and preserve intermediate state", () => {
   const platform = buildPlatform();
   const taskId = submitScopedTask(platform);

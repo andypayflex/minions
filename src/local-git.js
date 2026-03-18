@@ -69,7 +69,7 @@ export async function readWorkingTreeStatus(repositoryPath) {
   };
 }
 
-export async function createLocalDeliveryCommit(repositoryPath, message) {
+export async function createLocalDeliveryCommit(repositoryPath, message, scopedFiles = []) {
   await ensureLocalGitRepository(repositoryPath);
 
   const status = await readWorkingTreeStatus(repositoryPath);
@@ -77,12 +77,21 @@ export async function createLocalDeliveryCommit(repositoryPath, message) {
     throw new Error("repository has no local changes to commit");
   }
 
-  await runGit(repositoryPath, ["add", "-A"]);
-  const staged = await runGit(repositoryPath, ["diff", "--cached", "--name-only"]);
+  const files = [...new Set(scopedFiles.map((file) => String(file || "").trim()).filter(Boolean))];
+  if (files.length === 0) {
+    throw new Error("repository has no delivery-scoped files to commit");
+  }
+
+  await runGit(repositoryPath, ["add", "--", ...files]);
+  const staged = await runGit(repositoryPath, ["diff", "--cached", "--name-only", "--", ...files]);
   const stagedFiles = staged.stdout
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+
+  if (stagedFiles.length === 0) {
+    throw new Error("repository has no staged delivery-scoped changes to commit");
+  }
 
   await runGit(repositoryPath, ["commit", "-m", message]);
 

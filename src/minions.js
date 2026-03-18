@@ -1,5 +1,8 @@
 import { analyzeLocalRepositoryTarget } from "./local-repository.js";
+import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
 import { createLocalDeliveryBranch, createLocalDeliveryCommit, readWorkingTreeStatus } from "./local-git.js";
+import path from "node:path";
+import { inferSequenceSeedsFromMemory, mergeSequenceSeeds } from "./repository-sequence.js";
 
 const APPROVED_SYSTEMS = new Set(["github", "slack", "azure-devops"]);
 const TERMINAL_OUTCOMES = new Set([
@@ -82,10 +85,65 @@ function createResult(ok, data = {}) {
   return { ok, ...data };
 }
 
+function normalizeRepositoryRelativePath(repositoryPath, filePath) {
+  const value = String(filePath || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  if (!repositoryPath || !path.isAbsolute(value)) {
+    return value;
+  }
+
+  const relativePath = path.relative(repositoryPath, value);
+  if (!relativePath || relativePath.startsWith("..")) {
+    return value;
+  }
+
+  return relativePath;
+}
+
+function withTimeout(promise, timeoutMs, message = "operation timed out") {
+  let timeoutId = null;
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutId = setTimeout(() => {
+      resolve({
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        final: null,
+        timedOut: true,
+        error: message,
+      });
+    }, timeoutMs);
+  });
+
+  return Promise.race([
+    promise.finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }),
+    timeoutPromise,
+  ]);
+}
+
+function inferAreaFromPath(filePath) {
+  return String(filePath || "").split(/[\\/]/).filter(Boolean)[0] || "root";
+}
+
+function inferFileTypeFromPath(filePath) {
+  const lower = String(filePath || "").toLowerCase();
+  return lower.includes("test") || lower.includes("spec") || lower.includes("__tests__") ? "test" : "code";
+}
+
 export class MinionsPlatform {
   constructor(config = {}) {
     this.clock = config.clock || (() => new Date().toISOString());
     this.executionRunner = config.executionRunner || null;
+    this.executionTimeoutMs = Number(config.executionTimeoutMs || 90000);
+    this.githubDeliveryRunner = config.githubDeliveryRunner || createGitHubDeliveryRunnerFromEnv();
     this.sequence = new Map();
 
     this.approvedInitiationPaths = new Set(
@@ -133,10 +191,21 @@ export class MinionsPlatform {
     for (const entry of config.linkedContexts || []) {
       this.registerLinkedContext(entry);
     }
+
+    this._seedSequences(config.sequenceSeeds || {});
   }
 
   now() {
     return this.clock();
+  }
+
+  _seedSequences(sequenceSeeds = {}) {
+    const merged = mergeSequenceSeeds(sequenceSeeds, inferSequenceSeedsFromMemory(this));
+    for (const [prefix, value] of Object.entries(merged)) {
+      if ((Number(value) || 0) > 0) {
+        this.sequence.set(prefix, Number(value));
+      }
+    }
   }
 
   nextId(prefix) {
@@ -254,6 +323,7 @@ export class MinionsPlatform {
         workingContext: null,
         conflicts: [],
         duplicates: [],
+        analysis: null,
         relevance: null,
         finalOutcome: null,
         blockingReasons: [],
@@ -309,6 +379,17 @@ export class MinionsPlatform {
     });
     run.currentOutcomeState = state;
     this._recordLedger(run, "stage-transition", { stage, state, ...detail });
+  }
+
+  _markRunDeliveredSuccessfully(run) {
+    const task = this._requireTask(run.taskRequestId);
+    this._transitionRun(run, "delivery", "successful", {
+      branchName: run.delivery.branch?.name || null,
+      pullRequestId: run.delivery.pullRequest?.id || null,
+    });
+    task.status = "delivery-complete";
+    run.failedStage = null;
+    run.failureReason = null;
   }
 
   _denyRunRequest(run, actor, action, allowedRoles) {
@@ -552,6 +633,42 @@ export class MinionsPlatform {
   }
 
   async runAutonomousFlow(taskId) {
+    const task = this._requireTask(taskId);
+
+    if (task.runId) {
+      const existingRun = this._requireRun(task.runId);
+
+      if (existingRun.delivery?.pullRequest) {
+        if (!TERMINAL_OUTCOMES.has(existingRun.currentOutcomeState)) {
+          this._markRunDeliveredSuccessfully(existingRun);
+        }
+
+        return createResult(false, {
+          stage: "delivery",
+          reason: "task already has a completed delivery run",
+          runId: existingRun.id,
+          existingRun: clone({
+            currentOutcomeState: existingRun.currentOutcomeState,
+            currentStage: existingRun.progressState.currentStage,
+            branch: existingRun.delivery.branch,
+            pullRequest: existingRun.delivery.pullRequest,
+          }),
+        });
+      }
+
+      if (!TERMINAL_OUTCOMES.has(existingRun.currentOutcomeState)) {
+        return createResult(false, {
+          stage: existingRun.progressState.currentStage,
+          reason: "task already has an active run in progress",
+          runId: existingRun.id,
+          existingRun: clone({
+            currentOutcomeState: existingRun.currentOutcomeState,
+            currentStage: existingRun.progressState.currentStage,
+          }),
+        });
+      }
+    }
+
     const readiness = this.validateMinimumRunReadiness(taskId);
     if (readiness.result !== "ready") {
       return createResult(false, { stage: "readiness", detail: readiness });
@@ -585,6 +702,11 @@ export class MinionsPlatform {
     const workingContext = this.buildWorkingContext(taskId);
     if (!workingContext.ok) {
       return createResult(false, { stage: "working-context", detail: workingContext });
+    }
+
+    const analysis = await this.analyzeTaskAndRepoAsync(taskId);
+    if (!analysis.ok) {
+      return createResult(false, { stage: "analysis", detail: analysis });
     }
 
     const relevance = this.identifyRelevantChangeSurface(taskId);
@@ -641,6 +763,8 @@ export class MinionsPlatform {
       this.preserveIntermediateState(startup.runId);
       return createResult(false, { stage: "pull-request", detail: pullRequest, runId: startup.runId });
     }
+
+    this._markRunDeliveredSuccessfully(this._requireRun(startup.runId));
 
     return createResult(true, {
       taskId,
@@ -882,6 +1006,96 @@ export class MinionsPlatform {
     });
   }
 
+  async analyzeTaskAndRepoAsync(taskId) {
+    const task = this._requireTask(taskId);
+    const run = this._ensurePreparationRun(task);
+    const target = this.supportedTargets.get(task.repository);
+
+    if (!run.preparation.workingContext || !run.preparation.repositoryContext) {
+      return createResult(false, {
+        reason: "working and repository context must exist before task analysis",
+      });
+    }
+
+    let analysis = null;
+
+    if (target?.executionMode === "agent-runner" && this.executionRunner?.analyze && target.repositoryPath) {
+      try {
+        const result = await this.executionRunner.analyze({
+          task: {
+            id: task.id,
+            title: task.title,
+            objective: task.objective,
+            constraints: clone(task.constraints),
+            expectedOutcome: task.expectedOutcome,
+          },
+          repository: {
+            repositoryId: target.repositoryId,
+            repositoryPath: target.repositoryPath,
+            files: clone((run.preparation.repositoryContext.files || []).slice(0, 200)),
+            validationSteps: clone(run.preparation.repositoryContext.validationSteps || []),
+            metadata: clone(run.preparation.repositoryContext.metadata || {}),
+          },
+          context: {
+            workingContext: clone(run.preparation.workingContext || {}),
+            relatedWork: clone(run.preparation.relatedWork?.items || []),
+          },
+        });
+
+        if (result?.ok && result.final) {
+          analysis = {
+            provider: "codex-cli",
+            taskType: result.final.taskType || "code-change",
+            shouldProceed: result.final.shouldProceed !== false,
+            summary: result.final.summary || "AI task analysis completed",
+            reasoning: result.final.reasoning || "",
+            relevantFiles: asArray(result.final.relevantFiles)
+              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+              .filter(Boolean),
+            testFiles: asArray(result.final.testFiles)
+              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+              .filter(Boolean),
+            notes: asArray(result.final.notes).map((item) => String(item)).filter(Boolean),
+            completedAt: this.now(),
+          };
+        }
+      } catch {
+        analysis = null;
+      }
+    }
+
+    if (!analysis) {
+      const heuristicFiles = (run.preparation.repositoryContext.files || []).slice(0, 8).map((file) => file.path);
+      analysis = {
+        provider: "heuristic-fallback",
+        taskType: "code-change",
+        shouldProceed: true,
+        summary: "Fallback preparation analysis based on repository metadata.",
+        reasoning: "Execution runner analysis was unavailable, so Minions is proceeding with repository metadata only.",
+        relevantFiles: heuristicFiles,
+        testFiles: (run.preparation.repositoryContext.files || [])
+          .filter((file) => file.type === "test")
+          .slice(0, 4)
+          .map((file) => file.path),
+        notes: [],
+        completedAt: this.now(),
+      };
+    }
+
+    run.preparation.analysis = analysis;
+    this._recordLedger(run, "task-analysis-completed", {
+      provider: analysis.provider,
+      taskType: analysis.taskType,
+      shouldProceed: analysis.shouldProceed,
+      relevantFileCount: analysis.relevantFiles.length,
+      testFileCount: analysis.testFiles.length,
+    });
+
+    return createResult(true, {
+      analysis: clone(run.preparation.analysis),
+    });
+  }
+
   identifyRelevantChangeSurface(taskId) {
     const task = this._requireTask(taskId);
     const run = this._ensurePreparationRun(task);
@@ -897,7 +1111,7 @@ export class MinionsPlatform {
       normalizeWords(`${task.title} ${task.objective} ${task.expectedOutcome} ${task.constraints.join(" ")}`),
     );
 
-    const ranked = files
+    const heuristicRanked = files
       .map((file) => {
         const fileKeywords = new Set([
           ...normalizeWords(file.path),
@@ -915,9 +1129,46 @@ export class MinionsPlatform {
       })
       .sort((left, right) => right.score - left.score);
 
-    const topScore = ranked[0]?.score || 0;
-    const relevantFiles = ranked.filter((entry) => entry.score > 0);
-    const sufficientConfidence = topScore > 0;
+    const rankedByPath = new Map();
+    for (const entry of heuristicRanked.filter((item) => item.score > 0)) {
+      rankedByPath.set(entry.path, entry);
+    }
+
+    const analysisHints = [
+      ...asArray(run.preparation.analysis?.relevantFiles),
+      ...asArray(run.preparation.analysis?.testFiles),
+    ];
+    for (const hintedPath of analysisHints) {
+      if (!hintedPath) {
+        continue;
+      }
+
+      const existing = rankedByPath.get(hintedPath);
+      if (existing) {
+        rankedByPath.set(hintedPath, {
+          ...existing,
+          score: Math.max(existing.score, 1000),
+          hintedByAnalysis: true,
+        });
+        continue;
+      }
+
+      const repositoryFile = files.find((file) => file.path === hintedPath);
+      rankedByPath.set(hintedPath, {
+        path: hintedPath,
+        area: repositoryFile?.area || inferAreaFromPath(hintedPath),
+        type: repositoryFile?.type || inferFileTypeFromPath(hintedPath),
+        score: 1000,
+        hintedByAnalysis: true,
+      });
+    }
+
+    const relevantFiles = [...rankedByPath.values()].sort((left, right) => right.score - left.score);
+    const topScore = relevantFiles[0]?.score || 0;
+    const sufficientConfidence =
+      topScore > 0 ||
+      run.preparation.analysis?.shouldProceed === true ||
+      ["analysis-only", "documentation"].includes(run.preparation.analysis?.taskType);
 
     run.preparation.relevance = {
       rankedFiles: relevantFiles,
@@ -926,7 +1177,7 @@ export class MinionsPlatform {
       sufficientConfidence,
       lowConfidenceReason: sufficientConfidence
         ? null
-        : "no sufficiently relevant code or test surface could be identified",
+        : "no sufficiently relevant code or test surface could be identified heuristically",
       analyzedAt: this.now(),
     };
 
@@ -960,11 +1211,11 @@ export class MinionsPlatform {
       });
     }
 
-    if (!run.preparation.relevance?.sufficientConfidence) {
+    if (run.preparation.analysis?.shouldProceed === false || run.preparation.analysis?.taskType === "blocked") {
       result = "blocked-missing-context";
       reasons.push({
         kind: "missing-context",
-        reason: run.preparation.relevance?.lowConfidenceReason || "relevant change surface is unavailable",
+        reason: run.preparation.analysis?.summary || "AI task analysis determined the run should not proceed",
       });
     }
 
@@ -983,6 +1234,17 @@ export class MinionsPlatform {
     run.preparation.finalOutcome = {
       result,
       reasons,
+      warnings:
+        !run.preparation.relevance?.sufficientConfidence && result === "ready"
+          ? [
+              {
+                kind: "advisory",
+                reason:
+                  run.preparation.relevance?.lowConfidenceReason ||
+                  "heuristic relevance confidence is low, proceeding with AI-guided investigation",
+              },
+            ]
+          : [],
       evaluatedAt: this.now(),
     };
 
@@ -1117,26 +1379,31 @@ export class MinionsPlatform {
 
     let result;
     try {
-      result = await this.executionRunner.run({
-        task: {
-          id: task.id,
-          title: task.title,
-          objective: task.objective,
-          constraints: clone(task.constraints),
-          expectedOutcome: task.expectedOutcome,
-        },
-        repository: {
-          repositoryId: target.repositoryId,
-          repositoryPath: target.repositoryPath,
-          metadata: clone(run.preparation.repositoryContext?.metadata || target.metadata || {}),
-        },
-        context: {
-          workingContext: clone(run.preparation.workingContext || {}),
-          relevantFiles: clone((run.preparation.relevance?.rankedFiles || []).slice(0, 12)),
-          validationSteps: clone(run.preparation.repositoryContext?.validationSteps || target.validationSteps || []),
-          relatedWork: clone(run.preparation.relatedWork?.items || []),
-        },
-      });
+      result = await withTimeout(
+        this.executionRunner.run({
+          task: {
+            id: task.id,
+            title: task.title,
+            objective: task.objective,
+            constraints: clone(task.constraints),
+            expectedOutcome: task.expectedOutcome,
+          },
+          repository: {
+            repositoryId: target.repositoryId,
+            repositoryPath: target.repositoryPath,
+            metadata: clone(run.preparation.repositoryContext?.metadata || target.metadata || {}),
+          },
+          context: {
+            workingContext: clone(run.preparation.workingContext || {}),
+            analysis: clone(run.preparation.analysis || {}),
+            relevantFiles: clone((run.preparation.relevance?.rankedFiles || []).slice(0, 12)),
+            validationSteps: clone(run.preparation.repositoryContext?.validationSteps || target.validationSteps || []),
+            relatedWork: clone(run.preparation.relatedWork?.items || []),
+          },
+        }),
+        this.executionTimeoutMs,
+        `agent runner timed out after ${this.executionTimeoutMs}ms`,
+      );
     } catch (error) {
       result = {
         ok: false,
@@ -1148,24 +1415,56 @@ export class MinionsPlatform {
       };
     }
 
-    const final = result.final || {};
-    const changedFiles = Array.isArray(final.changedFiles)
-      ? [...new Set(final.changedFiles.map((item) => String(item).trim()).filter(Boolean))]
+    const final = result.final || null;
+    const finalPayload = final && typeof final === "object" && !Array.isArray(final) ? final : null;
+    const finalSummary =
+      finalPayload?.summary ||
+      (typeof final === "string" && final.trim() ? final.trim() : null);
+    let changedFiles = Array.isArray(finalPayload?.changedFiles)
+      ? [
+          ...new Set(
+            finalPayload.changedFiles
+              .map((item) => normalizeRepositoryRelativePath(target.repositoryPath, item))
+              .filter(Boolean),
+          ),
+        ]
       : [];
-    const commandsRun = Array.isArray(final.commandsRun)
-      ? final.commandsRun.map((item) => String(item).trim()).filter(Boolean)
+    const commandsRun = Array.isArray(finalPayload?.commandsRun)
+      ? finalPayload.commandsRun.map((item) => String(item).trim()).filter(Boolean)
       : [];
-    const notes = Array.isArray(final.notes) ? final.notes.map((item) => String(item).trim()).filter(Boolean) : [];
+    const notes = Array.isArray(finalPayload?.notes)
+      ? finalPayload.notes.map((item) => String(item).trim()).filter(Boolean)
+      : [];
     const failureReason =
       result.error ||
-      final.summary ||
+      finalSummary ||
       (result.exitCode === null ? "agent runner did not complete" : `agent runner exited with code ${result.exitCode}`);
+
+    if (result.ok && target.repositoryPath && changedFiles.length === 0) {
+      const status = await readWorkingTreeStatus(target.repositoryPath);
+      changedFiles = [...new Set(status.entries.map((entry) => entry.path).filter(Boolean))];
+    }
+
+    if (!result.ok && target.repositoryPath) {
+      const recovered = await this._recoverExecutionFromWorktree(run, target, {
+        summary: finalSummary,
+        failureReason,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+        notes,
+        commandsRun,
+      });
+
+      if (recovered) {
+        return recovered;
+      }
+    }
 
     run.execution.agentRun = {
       provider: "codex-cli",
       exitCode: result.exitCode,
-      outcome: final.outcome || (result.ok ? "completed" : "failed"),
-      summary: final.summary || null,
+      outcome: finalPayload?.outcome || (result.ok ? "completed" : "failed"),
+      summary: finalSummary,
       commandsRun,
       notes,
       stdout: result.stdout || "",
@@ -1173,7 +1472,7 @@ export class MinionsPlatform {
       completedAt: this.now(),
     };
 
-    if (!result.ok || final.outcome === "failed" || final.outcome === "blocked") {
+    if (!result.ok || finalPayload?.outcome === "failed" || finalPayload?.outcome === "blocked") {
       run.execution.writeFailure = {
         stage: "execution",
         reason: failureReason,
@@ -1230,6 +1529,62 @@ export class MinionsPlatform {
       changes: clone(run.execution.changes),
       currentWorkState: clone(run.execution.currentWorkState),
       agentRun: clone(run.execution.agentRun),
+    });
+  }
+
+  async _recoverExecutionFromWorktree(run, target, fallback = {}) {
+    const status = await readWorkingTreeStatus(target.repositoryPath);
+    const changedFiles = [...new Set(status.entries.map((entry) => entry.path).filter(Boolean))];
+
+    if (changedFiles.length === 0) {
+      return null;
+    }
+
+    run.execution.agentRun = {
+      provider: "codex-cli",
+      exitCode: null,
+      outcome: "completed",
+      summary: fallback.summary || "Recovered execution result from repository worktree state.",
+      commandsRun: clone(fallback.commandsRun || []),
+      notes: [
+        ...(fallback.notes || []),
+        "Minions recovered this execution from the git worktree because the agent runner did not return a final result.",
+      ],
+      stdout: fallback.stdout || "",
+      stderr: fallback.stderr || "",
+      completedAt: this.now(),
+      recoveredFromWorktree: true,
+    };
+    run.execution.writeFailure = null;
+    run.execution.changes = changedFiles.map((filePath) => ({
+      path: filePath,
+      action: "modify",
+      summary: fallback.summary || `Recovered ${filePath} from worktree state`,
+    }));
+    run.execution.currentWorkState = {
+      changedFiles,
+      changeCount: changedFiles.length,
+      commandsRun: clone(fallback.commandsRun || []),
+      notes: clone(run.execution.agentRun.notes),
+      lastUpdatedAt: this.now(),
+    };
+    run.hasAutonomousChanges = changedFiles.length > 0;
+
+    this._recordLedger(run, "agent-run-recovered", {
+      provider: "codex-cli",
+      changedFiles,
+      reason: fallback.failureReason || "agent runner did not return a final result",
+    });
+    this._transitionRun(run, "execution", "active", {
+      changedFiles,
+      recoveredFromWorktree: true,
+    });
+
+    return createResult(true, {
+      changes: clone(run.execution.changes),
+      currentWorkState: clone(run.execution.currentWorkState),
+      agentRun: clone(run.execution.agentRun),
+      recoveredFromWorktree: true,
     });
   }
 
@@ -1536,7 +1891,7 @@ export class MinionsPlatform {
     const task = this._requireTask(run.taskRequestId);
     const target = this.supportedTargets.get(task.repository);
 
-    if (target?.deliveryMode === "local-git" && target.repositoryPath && !options.forceFailure) {
+    if (["local-git", "github-pr"].includes(target?.deliveryMode) && target.repositoryPath && !options.forceFailure) {
       const gates = this.evaluateDeliveryGates(runId);
 
       if (!gates.eligible) {
@@ -1639,7 +1994,7 @@ export class MinionsPlatform {
     const task = this._requireTask(run.taskRequestId);
     const target = this.supportedTargets.get(task.repository);
 
-    if (target?.deliveryMode === "local-git" && target.repositoryPath) {
+    if (["local-git", "github-pr"].includes(target?.deliveryMode) && target.repositoryPath) {
       const gates = this.evaluateDeliveryGates(runId);
 
       if (!gates.eligible) {
@@ -1669,11 +2024,15 @@ export class MinionsPlatform {
       }
 
       try {
-        const commit = await createLocalDeliveryCommit(target.repositoryPath, `Minions: ${task.title}`);
+        const commit = await createLocalDeliveryCommit(
+          target.repositoryPath,
+          `Minions: ${task.title}`,
+          run.execution.changes.map((change) => change.path),
+        );
         const pullRequest = {
           id: this.nextId("pr"),
-          mode: "local-git",
-          status: "ready-for-remote-pr",
+          mode: target.deliveryMode,
+          status: target.deliveryMode === "github-pr" ? "published" : "ready-for-remote-pr",
           title: `Minions: ${task.title}`,
           taskLink: task.id,
           runLink: run.id,
@@ -1698,11 +2057,45 @@ export class MinionsPlatform {
           createdAt: this.now(),
         };
 
+        if (target.deliveryMode === "github-pr") {
+          if (!this.githubDeliveryRunner) {
+            throw new Error("GitHub delivery runner is not configured");
+          }
+
+          const published = await this.githubDeliveryRunner.publishPullRequest({
+            repositoryPath: target.repositoryPath,
+            branchName: run.delivery.branch.name,
+            baseBranch: target.metadata?.defaultBranch || "main",
+            title: pullRequest.title,
+            body: [
+              pullRequest.body.summary,
+              "",
+              `Task: ${task.id}`,
+              `Run: ${run.id}`,
+              "",
+              "Validation",
+              ...pullRequest.validationResults.map((step) => `- ${step.stepId}: ${step.status}`),
+              "",
+              "Evidence",
+              ...pullRequest.evidenceRefs.map((ref) => `- ${ref}`),
+            ].join("\n"),
+          });
+
+          pullRequest.github = {
+            number: published.pullRequest.number,
+            url: published.pullRequest.url,
+            state: published.pullRequest.state,
+            repository: target.repositoryId,
+          };
+          pullRequest.id = `pr-${String(published.pullRequest.number).padStart(4, "0")}`;
+          pullRequest.status = "published";
+        }
+
         run.delivery.pullRequest = pullRequest;
         this._recordLedger(run, "pull-request-created", {
           prId: pullRequest.id,
           taskLink: pullRequest.taskLink,
-          mode: "local-git",
+          mode: target.deliveryMode,
           commitSha: pullRequest.commitSha,
         });
         return createResult(true, { pullRequest: clone(pullRequest) });

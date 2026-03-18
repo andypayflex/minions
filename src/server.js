@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import { createExecutionRunnerFromEnv } from "./agent-runner.js";
 import { createAzureDevOpsClientFromEnv, mapAzureWorkItemToTaskPayload } from "./azure-devops.js";
+import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
 import { MinionsPlatform } from "./minions.js";
+import { inferSequenceSeedsFromRepository } from "./repository-sequence.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -159,8 +161,12 @@ async function serveStatic(reqPath, res) {
 }
 
 export function createApp(options = {}) {
+  const repositoryPath = process.env.MINIONS_DEFAULT_REPOSITORY_PATH || process.cwd();
   const platform = new MinionsPlatform({
     executionRunner: options.executionRunner || createExecutionRunnerFromEnv(),
+    executionTimeoutMs: options.executionTimeoutMs || Number(process.env.MINIONS_EXECUTION_TIMEOUT_MS || 90000),
+    githubDeliveryRunner: options.githubDeliveryRunner || createGitHubDeliveryRunnerFromEnv(),
+    sequenceSeeds: options.sequenceSeeds || inferSequenceSeedsFromRepository(repositoryPath),
   });
   const azureClient = options.azureClient || createAzureDevOpsClientFromEnv();
   seedPlatform(platform);

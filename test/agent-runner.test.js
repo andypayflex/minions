@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildCodexExecutionPrompt, CodexCliRunner } from "../src/agent-runner.js";
+import { buildCodexAnalysisPrompt, buildCodexExecutionPrompt, CodexCliRunner } from "../src/agent-runner.js";
 import { MinionsPlatform } from "../src/minions.js";
 
 function createMockSpawn(finalPayload) {
@@ -59,15 +59,46 @@ test("buildCodexExecutionPrompt includes task, repo, and file context", () => {
   assert.match(prompt, /Investigate ticket 55/);
 });
 
+test("buildCodexAnalysisPrompt includes repository summary and task framing", () => {
+  const prompt = buildCodexAnalysisPrompt({
+    task: {
+      id: "task-0001",
+      title: "Review repository structure",
+      objective: "Investigate the repo and propose a documentation update",
+      constraints: ["keep the work scoped"],
+      expectedOutcome: "clear plan for a small doc change",
+    },
+    repository: {
+      repositoryId: "repo/minions-app",
+      repositoryPath: "/tmp/minions-target",
+      files: [{ path: "src/intake.js", area: "src", type: "code" }],
+      validationSteps: [{ id: "test", command: "npm test" }],
+    },
+    context: {
+      relatedWork: [{ source: "azure-devops", id: "55", summary: "Investigate ticket 55" }],
+      workingContext: { taskSummary: { title: "Review repository structure" } },
+    },
+  });
+
+  assert.match(prompt, /Review repository structure/);
+  assert.match(prompt, /Repository File Summary/);
+  assert.match(prompt, /src\/intake\.js/);
+  assert.match(prompt, /taskType/);
+});
+
 test("CodexCliRunner executes codex exec and parses structured output", async () => {
+  let spawnedArgs = null;
   const runner = new CodexCliRunner({
-    spawnImpl: createMockSpawn({
-      outcome: "completed",
-      summary: "Updated intake implementation.",
-      changedFiles: ["src/intake.js", "test/intake.test.js"],
-      commandsRun: ["npm test"],
-      notes: ["Applied focused repository changes."],
-    }),
+    spawnImpl(command, args) {
+      spawnedArgs = args;
+      return createMockSpawn({
+        outcome: "completed",
+        summary: "Updated intake implementation.",
+        changedFiles: ["src/intake.js", "test/intake.test.js"],
+        commandsRun: ["npm test"],
+        notes: ["Applied focused repository changes."],
+      })(command, args);
+    },
   });
 
   const result = await runner.run({
@@ -94,7 +125,48 @@ test("CodexCliRunner executes codex exec and parses structured output", async ()
   assert.equal(result.exitCode, 0);
   assert.equal(result.final.summary, "Updated intake implementation.");
   assert.deepEqual(result.final.changedFiles, ["src/intake.js", "test/intake.test.js"]);
+  assert.equal(spawnedArgs.includes("--full-auto"), true);
   assert.match(result.prompt, /Fix intake flow/);
+});
+
+test("CodexCliRunner analyze executes codex exec and parses structured output", async () => {
+  const runner = new CodexCliRunner({
+    spawnImpl: createMockSpawn({
+      taskType: "documentation",
+      shouldProceed: true,
+      summary: "Update docs for the repository workflow.",
+      reasoning: "The task is investigative and should add a focused documentation artifact.",
+      relevantFiles: ["README.md", "docs/workflow.md"],
+      testFiles: [],
+      notes: ["No code edits are required beyond documentation."],
+    }),
+  });
+
+  const result = await runner.analyze({
+    task: {
+      id: "task-0001",
+      title: "Document workflow",
+      objective: "Summarize the repo workflow in a new doc",
+      constraints: ["stay concise"],
+      expectedOutcome: "new documentation file",
+    },
+    repository: {
+      repositoryId: "repo/minions-app",
+      repositoryPath: process.cwd(),
+      files: [{ path: "README.md", area: "root", type: "code" }],
+      validationSteps: [{ id: "test", command: "npm test" }],
+    },
+    context: {
+      relatedWork: [],
+      workingContext: {},
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.final.taskType, "documentation");
+  assert.deepEqual(result.final.relevantFiles, ["README.md", "docs/workflow.md"]);
+  assert.match(result.prompt, /Document workflow/);
 });
 
 test("platform uses execution runner when repository target is configured for agent-runner mode", async () => {
@@ -190,6 +262,101 @@ test("platform uses execution runner when repository target is configured for ag
     assert.deepEqual(execution.currentWorkState.changedFiles, ["src/feature.js"]);
     assert.deepEqual(execution.currentWorkState.commandsRun, ["npm test"]);
     assert.equal(platform.runs.get(startup.runId).execution.agentRun.summary, "Updated feature implementation.");
+  } finally {
+    await fs.rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("runAutonomousFlow uses AI task analysis so broad repo-analysis tasks do not block on heuristic relevance", async () => {
+  const repositoryPath = await fs.mkdtemp(path.join(os.tmpdir(), "minions-analysis-target-"));
+
+  try {
+    await fs.mkdir(path.join(repositoryPath, "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(repositoryPath, "package.json"),
+      JSON.stringify({
+        name: "analysis-target",
+        private: true,
+        scripts: { test: "node --test" },
+      }),
+    );
+    await fs.writeFile(path.join(repositoryPath, "src/feature.js"), "export const feature = () => 'before';\n");
+
+    const platform = new MinionsPlatform({
+      executionRunner: {
+        async analyze() {
+          return {
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            final: {
+              taskType: "documentation",
+              shouldProceed: true,
+              summary: "Create a repo improvements note.",
+              reasoning: "The task is broad, but a documentation artifact is an appropriate first step.",
+              relevantFiles: ["docs/repo-improvements.md", "src/feature.js"],
+              testFiles: [],
+              notes: ["Proceed without relying on keyword file matching."],
+            },
+          };
+        },
+        async run() {
+          return {
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            final: {
+              outcome: "completed",
+              summary: "Created a repository improvements note.",
+              changedFiles: ["docs/repo-improvements.md"],
+              commandsRun: ["npm test"],
+              notes: ["Completed after AI planning stage."],
+            },
+          };
+        },
+      },
+    });
+
+    platform.onboardSupportedTarget({
+      repositoryId: "repo/analysis-target",
+      teamId: "team-core",
+      repositoryPath,
+      executionMode: "agent-runner",
+      metadata: {
+        language: "javascript",
+        defaultBranch: "main",
+      },
+    });
+
+    const taskId = platform.submitTaskRequest(
+      {
+        title: "Investigate the repo and document improvements",
+        objective: "Analyse the repository and create a small improvement note based on what you find",
+        repository: "repo/analysis-target",
+        constraints: ["keep it focused", "prefer documentation over broad code changes"],
+        expectedOutcome: "a concise repository improvements note",
+        linkedItems: [],
+        requestedActions: ["modify-code"],
+      },
+      {
+        requesterIdentity: "engineer:aiden",
+        entryPoint: "slack/minions",
+      },
+    ).taskRequestId;
+
+    const result = await platform.runAutonomousFlow(taskId);
+    assert.equal(result.ok, true);
+
+    const run = platform.runs.get(result.runId);
+    assert.equal(run.preparation.analysis.taskType, "documentation");
+    assert.equal(run.preparation.finalOutcome.result, "ready");
+    assert.deepEqual(run.preparation.relevance.rankedFiles.map((file) => file.path).slice(0, 2), [
+      "docs/repo-improvements.md",
+      "src/feature.js",
+    ]);
+    assert.deepEqual(run.execution.currentWorkState.changedFiles, ["docs/repo-improvements.md"]);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }
