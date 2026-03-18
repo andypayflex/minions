@@ -8,6 +8,10 @@ const azureResult = document.querySelector("#azure-result");
 const refreshButton = document.querySelector("#refresh-button");
 const healthButton = document.querySelector("#show-health");
 const heroStats = document.querySelector("#hero-stats");
+const runtimeModeNote = document.querySelector("#runtime-mode-note");
+
+runtimeModeNote.textContent =
+  "Runtime mode: agent-runner execution with local-git delivery, so each run stays visible and lands as a local branch and commit.";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
