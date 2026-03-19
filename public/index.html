@@ -104,8 +104,9 @@ avoid docs-only edits</textarea>
                 </select>
               </label>
               <div class="form-actions">
-                <button type="submit">Create Task</button>
+                <button id="task-submit-button" type="submit">Create Task</button>
               </div>
+              <p id="task-submit-status" class="caption form-status" aria-live="polite">Ready to create a task via the live API.</p>
             </form>
             <div id="submission-result" class="result-panel muted">No task submitted yet.</div>
           </article>
