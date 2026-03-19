@@ -533,13 +533,43 @@ async function watchTaskForRun(taskId) {
   taskRunWatchers.set(taskId, timeoutId);
 }
 
-function card(title, meta, buttons = []) {
+function toneForTaskStatus(status) {
+  const normalizedStatus = String(status || "").toLowerCase();
+
+  if (["completed", "successful", "done"].includes(normalizedStatus)) {
+    return "success";
+  }
+
+  if (["running", "in progress", "active"].includes(normalizedStatus)) {
+    return "info";
+  }
+
+  if (["failed", "blocked", "partial"].includes(normalizedStatus)) {
+    return "warning";
+  }
+
+  return "neutral";
+}
+
+function card(title, meta, buttons = [], options = {}) {
   const wrapper = document.createElement("section");
   wrapper.className = "item-card";
+  if (options.tone) {
+    wrapper.dataset.tone = options.tone;
+  }
 
   const header = document.createElement("div");
   header.className = "item-card-head";
-  header.innerHTML = `<h3>${title}</h3><p>${meta}</p>`;
+  const badgeMarkup = options.badgeLabel
+    ? `<span class="item-badge item-badge-${escapeHtml(options.tone || "neutral")}">${escapeHtml(options.badgeLabel)}</span>`
+    : "";
+  header.innerHTML = `
+    <div class="item-card-title-row">
+      <h3>${escapeHtml(title)}</h3>
+      ${badgeMarkup}
+    </div>
+    <p>${escapeHtml(meta)}</p>
+  `;
   wrapper.append(header);
 
   const actions = document.createElement("div");
@@ -669,7 +699,7 @@ async function refreshDashboard() {
       }
     });
     run.disabled = pendingTaskRuns.has(task.id) || Boolean(activeRunId);
-    taskList.append(card(task.title, `${task.id} · ${task.status}`, [inspect, run]));
+    taskList.append(card(task.title, task.id, [inspect, run], { badgeLabel: formatLabel(task.status), tone: toneForTaskStatus(task.status) }));
   }
 
   runList.replaceChildren();
