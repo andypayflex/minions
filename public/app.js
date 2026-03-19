@@ -1,4 +1,5 @@
 const taskForm = document.querySelector("#task-form");
+const taskSubmitButton = taskForm.querySelector('button[type="submit"]');
 const azureForm = document.querySelector("#azure-form");
 const taskList = document.querySelector("#task-list");
 const runList = document.querySelector("#run-list");
