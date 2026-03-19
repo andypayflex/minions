@@ -138,6 +138,35 @@ function buildRunSummary(run) {
   };
 }
 
+async function createAndLaunchTask(platform, body) {
+  const submitted = platform.submitTaskRequest(buildTaskPayload(body), {
+    requesterIdentity: body.requesterIdentity || "engineer:web-user",
+    entryPoint: body.entryPoint || "slack/minions",
+  });
+
+  if (!submitted.ok) {
+    return {
+      status: 400,
+      payload: submitted,
+    };
+  }
+
+  const taskId = submitted.taskRequestId;
+  const task = platform.getTask(taskId);
+  const launched = await platform.runAutonomousFlow(taskId);
+
+  return {
+    status: launched.ok ? 201 : 422,
+    payload: {
+      ...launched,
+      taskRequestId: taskId,
+      task,
+      run: launched.runId ? platform.getRun(launched.runId) : null,
+      status: launched.ok ? "task-created-and-run-started" : "task-created-but-run-needs-attention",
+    },
+  };
+}
+
 async function serveStatic(reqPath, res) {
   const safePath = reqPath === "/" ? "/index.html" : reqPath;
   const filePath = path.normalize(path.join(publicDir, safePath));
@@ -273,6 +302,13 @@ export function createApp(options = {}) {
         });
 
         json(res, result.ok ? 201 : 400, result);
+        return;
+      }
+
+      if (pathname === "/api/tasks/launch" && req.method === "POST") {
+        const body = await parseBody(req);
+        const result = await createAndLaunchTask(platform, body);
+        json(res, result.status, result.payload);
         return;
       }
 
