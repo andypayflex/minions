@@ -6,6 +6,8 @@ const inspector = document.querySelector("#inspector");
 const submissionResult = document.querySelector("#submission-result");
 const azureResult = document.querySelector("#azure-result");
 const refreshButton = document.querySelector("#refresh-button");
+const taskSubmitButton = document.querySelector("#task-submit-button");
+const taskSubmitStatus = document.querySelector("#task-submit-status");
 const healthButton = document.querySelector("#show-health");
 const heroStats = document.querySelector("#hero-stats");
 const runtimeModeNote = document.querySelector("#runtime-mode-note");
@@ -479,6 +481,12 @@ function stopPiAuthPolling() {
     clearTimeout(piAuthPollTimer);
   }
   piAuthPollTimer = null;
+}
+
+function setTaskSubmissionState({ busy = false, message, buttonLabel } = {}) {
+  taskSubmitButton.disabled = busy;
+  taskSubmitButton.textContent = buttonLabel || (busy ? "Creating…" : "Create Task");
+  taskSubmitStatus.textContent = message || "Ready to create a task via the live API.";
 }
 
 function isRunTerminal(run) {

@@ -245,6 +245,10 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.form-status {
+  margin: -2px 2px 0;
+}
+
 .item-card {
   padding: 14px;
   border-radius: 18px;
