@@ -1,0 +1,2 @@
+Minions server running on http://127.0.0.1:3211
+Runtime modes: execution=agent-runner orchestration=single-runner delivery=simulated

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createExecutionRunnerFromEnv } from "./agent-runner.js";
+import { PiSubscriptionAuthManager } from "./pi-auth.js";
 import { createAzureDevOpsClientFromEnv, mapAzureWorkItemToTaskPayload } from "./azure-devops.js";
 import { createGitHubDeliveryRunnerFromEnv } from "./github-delivery.js";
 import { createGsdOrchestratorFromEnv } from "./gsd-orchestrator.js";
@@ -16,13 +17,14 @@ const __dirname = path.dirname(__filename);
 const publicDir = path.resolve(__dirname, "../public");
 
 function seedPlatform(platform, runtime = {}) {
+  const orchestrationMode = process.env.MINIONS_ORCHESTRATION_MODE || "single-runner";
   platform.onboardSupportedTarget({
     repositoryId: "repo/minions-app",
     teamId: "team-core",
     repositoryPath: process.env.MINIONS_DEFAULT_REPOSITORY_PATH || process.cwd(),
     executionMode: process.env.MINIONS_EXECUTION_MODE || "simulated",
     deliveryMode: process.env.MINIONS_DELIVERY_MODE || "simulated",
-    orchestrator: runtime.orchestrator || null,
+    orchestrator: orchestrationMode === "gsd-team" ? runtime.orchestrator || null : null,
     metadata: {
       language: "javascript",
       defaultBranch: "main",
@@ -184,6 +186,7 @@ export function createApp(options = {}) {
     sequenceSeeds: options.sequenceSeeds || inferSequenceSeedsFromRepository(repositoryPath),
   });
   const azureClient = options.azureClient || createAzureDevOpsClientFromEnv();
+  const piAuthManager = options.piAuthManager || new PiSubscriptionAuthManager();
   seedPlatform(platform, { orchestrator });
 
   const server = http.createServer(async (req, res) => {
@@ -200,7 +203,44 @@ export function createApp(options = {}) {
             orchestrationMode,
             deliveryMode,
           },
+          piAuth: await piAuthManager.getState(),
         });
+        return;
+      }
+
+      if (pathname === "/api/pi/auth/status" && req.method === "GET") {
+        json(res, 200, await piAuthManager.getState());
+        return;
+      }
+
+      if (pathname === "/api/pi/auth/login" && req.method === "POST") {
+        json(res, 200, await piAuthManager.createLoginJob());
+        return;
+      }
+
+      if (pathname.match(/^\/api\/pi\/auth\/jobs\/[^/]+$/) && req.method === "GET") {
+        const jobId = pathname.split("/").pop();
+        const result = await piAuthManager.getJob(jobId);
+        json(res, result.ok ? 200 : 404, result);
+        return;
+      }
+
+      if (pathname.match(/^\/api\/pi\/auth\/jobs\/[^/]+\/launch$/) && req.method === "POST") {
+        const jobId = pathname.split("/")[5];
+        const result = await piAuthManager.launchLoginBootstrap(jobId);
+        json(res, result.ok ? 200 : 404, result);
+        return;
+      }
+
+      if (pathname.match(/^\/api\/pi\/auth\/browser\/[^/]+$/) && req.method === "GET") {
+        const jobId = pathname.split("/").pop();
+        const result = await piAuthManager.getJob(jobId);
+        if (!result.ok) {
+          notFound(res);
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(piAuthManager.renderBrowserPage(jobId));
         return;
       }
 

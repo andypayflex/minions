@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createApp } from "../src/server.js";
+import { PiSubscriptionAuthManager } from "../src/pi-auth.js";
 
-async function withServer(fn) {
-  const { server } = createApp();
+async function withServer(fn, appOptions = {}) {
+  const { server } = createApp(appOptions);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -21,6 +22,42 @@ async function withServer(fn) {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 }
+
+test("server exposes pi subscription auth endpoints", async (t) => {
+  try {
+    const piAuthManager = new PiSubscriptionAuthManager({
+      sharedAgentDir: "/tmp/minions-test-subscription-auth",
+      piCommand: "pi",
+      spawnImpl() {
+        return { unref() {} };
+      },
+    });
+    await withServer(async (baseUrl) => {
+      const statusResponse = await fetch(`${baseUrl}/api/pi/auth/status`);
+      const status = await statusResponse.json();
+      assert.equal(statusResponse.status, 200);
+      assert.equal(typeof status.auth.authenticated, "boolean");
+
+      const login = await fetch(`${baseUrl}/api/pi/auth/login`, { method: "POST" }).then((response) => response.json());
+      assert.equal(login.ok, true);
+      assert.equal(typeof login.job.jobId, "string");
+
+      const progress = await fetch(`${baseUrl}/api/pi/auth/jobs/${login.job.jobId}`).then((response) => response.json());
+      assert.ok(["pending", "completed"].includes(progress.job.state));
+
+      const launch = await fetch(`${baseUrl}/api/pi/auth/jobs/${login.job.jobId}/launch`, { method: "POST" }).then((response) => response.json());
+      assert.equal(launch.ok, true);
+      assert.equal(typeof launch.manualCommand, "string");
+    });
+  } catch (error) {
+    if (error?.code === "EPERM") {
+      t.skip("sandbox does not allow opening a local HTTP listener");
+      return;
+    }
+
+    throw error;
+  }
+});
 
 test("server serves health, task submission, run execution, and history APIs", async (t) => {
   try {

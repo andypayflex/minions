@@ -23,70 +23,47 @@
         </div>
       </section>
 
-      <section class="grid">
-        <article class="panel form-panel">
-          <div class="panel-head">
-            <h2>Submit Task</h2>
-            <button id="refresh-button" class="ghost-button">Refresh</button>
-          </div>
-          <form id="task-form">
-            <label>
-              <span>Title</span>
-              <input name="title" value="Create a tiny docs-only PR to verify the end-to-end GitHub flow" required />
-            </label>
-            <label>
-              <span>Objective</span>
-              <textarea name="objective" rows="3" required>Make a minimal documentation-only change that is safe to review and merge so we can validate the full Minions flow from task creation through execution and GitHub pull request delivery.</textarea>
-            </label>
-            <label>
-              <span>Constraints</span>
-              <textarea name="constraints" rows="3">limit the change to a tiny docs-only edit
-avoid application code, tests, build config, and API changes
-produce the smallest safe GitHub PR that proves the end-to-end flow works</textarea>
-            </label>
-            <label>
-              <span>Expected Outcome</span>
-              <input name="expectedOutcome" value="a tiny documentation-only GitHub PR is opened successfully as an end-to-end delivery test" required />
-            </label>
-            <label>
-              <span>Repository</span>
-              <select name="repository">
-                <option value="repo/minions-app">repo/minions-app</option>
-              </select>
-            </label>
-            <div class="form-actions">
-              <button type="submit">Create Task</button>
+      <section class="auth-strip">
+        <article id="pi-auth-card" class="panel auth-panel">
+          <div class="panel-head panel-head-tight">
+            <div>
+              <p class="section-kicker">Pi / OpenAI Codex</p>
+              <h2>Subscription Auth</h2>
             </div>
             <div class="detail-actions">
-              <button id="show-health" class="ghost-button">Health</button>
+              <button id="pi-auth-refresh" class="ghost-button">Refresh Auth</button>
+              <button id="pi-auth-login">Connect ChatGPT</button>
             </div>
-            <div id="inspector" class="result-panel result-panel-primary">Select an action to inspect live API output.</div>
+          </div>
+          <p class="panel-intro">Authenticate once from the app using your ChatGPT subscription so future Pi executions can reuse the shared authenticated runtime instead of requiring API Platform keys.</p>
+          <div id="pi-auth-status" class="result-panel muted">Checking Pi auth status…</div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <section class="monitoring-grid">
+          <article class="panel monitoring-panel">
+            <div class="panel-head panel-head-tight">
+              <div>
+                <p class="section-kicker">Monitor</p>
+                <h2>Tasks</h2>
+              </div>
+              <span class="caption">Inspect a task or launch the full autonomous flow.</span>
+            </div>
+            <div id="task-list" class="stack"></div>
           </article>
 
-          <section class="monitoring-grid">
-            <article class="panel monitoring-panel">
-              <div class="panel-head panel-head-tight">
-                <div>
-                  <p class="section-kicker">Monitor</p>
-                  <h2>Tasks</h2>
-                </div>
-                <span class="caption">Inspect a task or launch the full autonomous flow.</span>
+          <article class="panel monitoring-panel">
+            <div class="panel-head panel-head-tight">
+              <div>
+                <p class="section-kicker">Monitor</p>
+                <h2>Runs</h2>
               </div>
-              <div id="task-list" class="stack"></div>
-            </article>
-
-            <article class="panel monitoring-panel">
-              <div class="panel-head panel-head-tight">
-                <div>
-                  <p class="section-kicker">Monitor</p>
-                  <h2>Runs</h2>
-                </div>
-                <span class="caption">Track live status, history, structured output, and operator actions.</span>
-              </div>
-              <div id="run-list" class="stack"></div>
-            </article>
-          </section>
-        </div>
+              <span class="caption">Track live status, history, structured output, and operator actions.</span>
+            </div>
+            <div id="run-list" class="stack"></div>
+          </article>
+        </section>
 
         <aside class="workflow-sidebar">
           <article class="panel intake-panel intake-panel-primary">
@@ -103,21 +80,22 @@ produce the smallest safe GitHub PR that proves the end-to-end flow works</texta
             <form id="task-form">
               <label>
                 <span>Title</span>
-                <input name="title" value="Improve the empty states for tasks and runs" required />
+                <input name="title" value="Add a small visual polish to the task cards in the dashboard" required />
               </label>
               <label>
                 <span>Objective</span>
-                <textarea name="objective" rows="3" required>Make the dashboard feel more intentional when there are no tasks or runs by replacing the plain empty-state text with clearer guidance and a better visual treatment.</textarea>
+                <textarea name="objective" rows="3" required>Make a small but real UI change by adding a subtle status badge or accent treatment to the task cards so the dashboard feels more polished and the end-to-end flow exercises an actual frontend code change.</textarea>
               </label>
               <label>
                 <span>Constraints</span>
-                <textarea name="constraints" rows="3">keep the change small
-prefer touching only public/app.js and public/styles.css
-do not change API routes or server behavior</textarea>
+                <textarea name="constraints" rows="3">keep the change small and reviewable
+prefer touching only public/app.js, public/index.html, and public/styles.css
+do not change API routes, backend behavior, or build tooling
+avoid docs-only edits</textarea>
               </label>
               <label>
                 <span>Expected Outcome</span>
-                <input name="expectedOutcome" value="the UI shows more polished empty states and the run produces a real GitHub PR" required />
+                <input name="expectedOutcome" value="the UI shows a small polished task-card improvement and the run produces a real GitHub PR with an actual frontend change" required />
               </label>
               <label>
                 <span>Repository</span>
@@ -157,6 +135,14 @@ do not change API routes or server behavior</textarea>
               </div>
             </form>
             <div id="azure-result" class="result-panel muted">No Azure work item imported yet.</div>
+          </article>
+
+          <article class="panel detail-panel">
+            <div class="panel-head">
+              <h2>Inspector</h2>
+              <button id="show-health" class="ghost-button">Health</button>
+            </div>
+            <div id="inspector" class="result-panel result-panel-primary">Select an action to inspect live API output.</div>
           </article>
         </aside>
       </section>

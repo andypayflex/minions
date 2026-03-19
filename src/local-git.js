@@ -69,7 +69,6 @@ export async function ensureLocalBranch(repositoryPath, branchName) {
   const existing = await runGit(repositoryPath, ["branch", "--list", branchName]);
 
   if (existing.stdout.trim()) {
-    await runGit(repositoryPath, ["checkout", branchName]);
     return {
       name: branchName,
       baseRef,
@@ -77,7 +76,7 @@ export async function ensureLocalBranch(repositoryPath, branchName) {
     };
   }
 
-  await runGit(repositoryPath, ["checkout", "-b", branchName]);
+  await runGit(repositoryPath, ["branch", branchName]);
   return {
     name: branchName,
     baseRef,

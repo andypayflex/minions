@@ -11,6 +11,8 @@ import {
   createLocalDeliveryBranch,
   createLocalDeliveryCommit,
   createRunWorktree,
+  ensureLocalBranch,
+  readCurrentBranch,
   readWorkingTreeStatus,
   removeRunWorktree,
 } from "../src/local-git.js";
@@ -96,18 +98,43 @@ test("local git helpers create and remove an isolated run worktree", async () =>
   const repositoryPath = await createTempGitRepo();
 
   try {
+    const sourceBranchBefore = await readCurrentBranch(repositoryPath);
     const worktree = await createRunWorktree(repositoryPath, "minions/task-worktree");
     assert.match(worktree.path, /run-/);
+    assert.equal(worktree.sourceBranch, "main");
+    assert.equal(await readCurrentBranch(repositoryPath), sourceBranchBefore);
+    assert.equal(await readCurrentBranch(worktree.path), "minions/task-worktree");
+
     await fs.writeFile(path.join(worktree.path, "src", "feature.js"), "export const feature = () => 'worktree';\n");
 
     const sourceStatus = await readWorkingTreeStatus(repositoryPath);
     assert.equal(sourceStatus.clean, true);
+    assert.equal(await readCurrentBranch(repositoryPath), "main");
 
     const worktreeStatus = await readWorkingTreeStatus(worktree.path);
     assert.equal(worktreeStatus.entries[0].path, "src/feature.js");
 
     await removeRunWorktree(worktree.path);
     await assert.rejects(() => fs.access(worktree.path));
+  } finally {
+    await fs.rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("ensureLocalBranch creates a branch ref without switching the source checkout", async () => {
+  const repositoryPath = await createTempGitRepo();
+
+  try {
+    const beforeBranch = await readCurrentBranch(repositoryPath);
+    const created = await ensureLocalBranch(repositoryPath, "minions/task-branch-only");
+    assert.equal(created.name, "minions/task-branch-only");
+    assert.equal(created.baseRef, "main");
+    assert.equal(created.existed, false);
+    assert.equal(await readCurrentBranch(repositoryPath), beforeBranch);
+
+    const existing = await ensureLocalBranch(repositoryPath, "minions/task-branch-only");
+    assert.equal(existing.existed, true);
+    assert.equal(await readCurrentBranch(repositoryPath), beforeBranch);
   } finally {
     await fs.rm(repositoryPath, { recursive: true, force: true });
   }
@@ -180,6 +207,8 @@ test("platform local-git delivery creates a real branch and commit for a complet
     const runId = startup.runId;
     const runRepositoryPath = startup.environment.repositoryPath;
     assert.notEqual(runRepositoryPath, repositoryPath);
+    assert.equal(await readCurrentBranch(repositoryPath), "main");
+    assert.equal(await readCurrentBranch(runRepositoryPath), `minions/${taskId}`);
     await fs.writeFile(path.join(runRepositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
     assert.equal(
       platform.executeRepositoryChanges(runId, {

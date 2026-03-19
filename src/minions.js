@@ -1444,26 +1444,58 @@ export class MinionsPlatform {
       }
     } else if (target?.repositoryPath) {
       try {
-        const branch = await ensureLocalBranch(target.repositoryPath, deliveryBranchName);
-        run.environment.branch = {
-          name: branch.name,
-          baseRef: branch.baseRef,
-          role: "environment-branch",
-          createdAt: this.now(),
-          existed: branch.existed,
-        };
-        run.delivery.branch = {
-          id: this.nextId("branch"),
-          name: branch.name,
-          baseRef: branch.baseRef,
-          createdAt: this.now(),
-          mode: target.deliveryMode || "simulated",
-          repositoryPath: target.repositoryPath,
-          role: "delivery-candidate",
-          createdDuringEnvironmentSetup: true,
-          published: false,
-        };
-        this._recordLedger(run, "delivery-branch-precreated", run.delivery.branch);
+        if (target?.executionMode === "agent-runner") {
+          const worktree = await createRunWorktree(target.repositoryPath, deliveryBranchName, options);
+          run.environment.worktree = {
+            ...worktree,
+            lifecycle: "created",
+            usage: "execution-only",
+          };
+          run.environment.repositoryPath = worktree.path;
+          run.effectiveRepositoryPath = worktree.path;
+          run.environment.branch = {
+            name: worktree.branchName,
+            baseRef: worktree.sourceBranch,
+            role: "environment-worktree",
+            createdAt: worktree.createdAt,
+            sourceRepositoryPath: worktree.sourceRepositoryPath,
+          };
+          run.delivery.branch = {
+            id: this.nextId("branch"),
+            name: worktree.branchName,
+            baseRef: worktree.sourceBranch,
+            createdAt: worktree.createdAt,
+            mode: target.deliveryMode || "simulated",
+            repositoryPath: worktree.path,
+            sourceRepositoryPath: worktree.sourceRepositoryPath,
+            role: "delivery-candidate",
+            createdDuringEnvironmentSetup: true,
+            published: false,
+          };
+          this._recordLedger(run, "run-worktree-created", run.environment.worktree);
+          this._recordLedger(run, "delivery-branch-precreated", run.delivery.branch);
+        } else {
+          const branch = await ensureLocalBranch(target.repositoryPath, deliveryBranchName);
+          run.environment.branch = {
+            name: branch.name,
+            baseRef: branch.baseRef,
+            role: "environment-branch",
+            createdAt: this.now(),
+            existed: branch.existed,
+          };
+          run.delivery.branch = {
+            id: this.nextId("branch"),
+            name: branch.name,
+            baseRef: branch.baseRef,
+            createdAt: this.now(),
+            mode: target.deliveryMode || "simulated",
+            repositoryPath: target.repositoryPath,
+            role: "delivery-candidate",
+            createdDuringEnvironmentSetup: true,
+            published: false,
+          };
+          this._recordLedger(run, "delivery-branch-precreated", run.delivery.branch);
+        }
       } catch (error) {
         run.failedStage = "environment-startup";
         run.failureReason = error instanceof Error ? error.message : "environment branch creation failed";

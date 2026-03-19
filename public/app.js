@@ -9,11 +9,16 @@ const refreshButton = document.querySelector("#refresh-button");
 const healthButton = document.querySelector("#show-health");
 const heroStats = document.querySelector("#hero-stats");
 const runtimeModeNote = document.querySelector("#runtime-mode-note");
+const piAuthStatus = document.querySelector("#pi-auth-status");
+const piAuthRefreshButton = document.querySelector("#pi-auth-refresh");
+const piAuthLoginButton = document.querySelector("#pi-auth-login");
 const TERMINAL_STATES = new Set(["successful", "partial", "failed", "blocked", "boundary-stopped", "interrupted"]);
 const pendingTaskRuns = new Set();
 const taskRunWatchers = new Map();
 const runPollers = new Map();
 let followedRunId = null;
+let activePiAuthJobId = null;
+let piAuthPollTimer = null;
 
 runtimeModeNote.textContent =
   "Runtime mode: autonomous runner execution with github-pr delivery, so successful runs can open a real GitHub pull request.";
@@ -348,6 +353,34 @@ function inferResultModel(payload, context = {}) {
     };
   }
 
+  if (payload?.auth || payload?.job) {
+    return {
+      headline: payload?.auth?.authenticated ? "Subscription auth ready" : "Subscription auth required",
+      tone: payload?.auth?.authenticated ? "success" : payload?.job?.state === "pending" ? "info" : "warning",
+      sections: [
+        {
+          title: "Auth Status",
+          items: [
+            { label: "Mode", value: payload?.auth?.mode || payload?.job?.provider || "none" },
+            { label: "Authenticated", value: String(Boolean(payload?.auth?.authenticated)) },
+            { label: "Shared Agent Dir", value: payload?.auth?.sharedAgentDir || payload?.job?.sharedAgentDir },
+            { label: "Authenticated At", value: payload?.auth?.authenticatedAt || "Not yet" },
+          ],
+        },
+        {
+          title: "Login Progress",
+          items: [
+            { label: "Job", value: payload?.job?.jobId || "No active job" },
+            { label: "State", value: payload?.job?.state || "idle" },
+            { label: "Message", value: payload?.job?.message || (payload?.auth?.authenticated ? "Ready for shared Pi execution." : "Open the browser flow to sign in.") },
+          ],
+        },
+      ],
+      rawPayload: payload,
+      rawLabel: "Pi auth payload",
+    };
+  }
+
   if (payload?.runs || payload?.tasks || payload?.repositories) {
     return {
       headline: context.title || "Collection response",
@@ -367,10 +400,10 @@ function inferResultModel(payload, context = {}) {
     };
   }
 
-  if (payload?.status || payload?.service || payload?.uptime) {
+  if (payload?.status || payload?.service || payload?.uptime || typeof payload?.ok === "boolean") {
     return {
       headline: "Service health",
-      tone: payload.status === "ok" ? "success" : "neutral",
+      tone: payload.status === "ok" || payload.ok === true ? "success" : "neutral",
       sections: [
         {
           title: "Health Check",
@@ -439,6 +472,13 @@ function stopRunPolling(runId) {
     clearTimeout(timeoutId);
   }
   runPollers.delete(runId);
+}
+
+function stopPiAuthPolling() {
+  if (piAuthPollTimer) {
+    clearTimeout(piAuthPollTimer);
+  }
+  piAuthPollTimer = null;
 }
 
 function isRunTerminal(run) {
@@ -585,6 +625,54 @@ function emptyState(eyebrow, title, message, hint, options = {}) {
     </div>
   `;
   return wrapper;
+}
+
+async function refreshPiAuthStatus() {
+  try {
+    const payload = await api("/api/pi/auth/status");
+    showJson(piAuthStatus, payload, { title: "Pi subscription auth" });
+    piAuthLoginButton.disabled = Boolean(payload?.auth?.authenticated);
+    piAuthLoginButton.textContent = payload?.auth?.authenticated ? "Connected" : "Connect ChatGPT";
+    return payload;
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Pi auth unavailable" });
+    return null;
+  }
+}
+
+async function pollPiAuthJob(jobId) {
+  try {
+    const payload = await api(`/api/pi/auth/jobs/${jobId}`);
+    showJson(piAuthStatus, payload, { title: "Pi auth progress" });
+    if (payload?.job?.state === "completed" || payload?.auth?.authenticated) {
+      activePiAuthJobId = null;
+      stopPiAuthPolling();
+      await refreshPiAuthStatus();
+      return;
+    }
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Pi auth progress unavailable" });
+    activePiAuthJobId = null;
+    stopPiAuthPolling();
+    return;
+  }
+
+  piAuthPollTimer = window.setTimeout(() => {
+    void pollPiAuthJob(jobId);
+  }, 1500);
+}
+
+async function startPiAuthLogin() {
+  try {
+    const payload = await api("/api/pi/auth/login", { method: "POST" });
+    activePiAuthJobId = payload.job.jobId;
+    showJson(piAuthStatus, payload, { title: "Pi auth started" });
+    window.open(payload.job.loginUrl, "pi-subscription-auth", "popup,width=900,height=780");
+    stopPiAuthPolling();
+    void pollPiAuthJob(activePiAuthJobId);
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Unable to start Pi auth" });
+  }
 }
 
 async function refreshDashboard() {
@@ -801,7 +889,13 @@ healthButton.addEventListener("click", async () => {
   followedRunId = null;
   showJson(inspector, await api("/api/health"), { title: "Service health" });
 });
+piAuthRefreshButton.addEventListener("click", () => {
+  void refreshPiAuthStatus();
+});
+piAuthLoginButton.addEventListener("click", () => {
+  void startPiAuthLogin();
+});
 
-refreshDashboard().catch((error) => {
+Promise.all([refreshDashboard(), refreshPiAuthStatus()]).catch((error) => {
   showError(inspector, error, { title: "Dashboard unavailable" });
 });

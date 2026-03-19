@@ -1,6 +1,6 @@
 # pi-vs-cc
 
-A collection of [Pi Coding Agent](https://github.com/mariozechner/pi-coding-agent) customized instances. _Why?_ To showcase what it looks like to hedge against the leader in the agentic coding market, Claude Code. Here we showcase how you can customize the UI, agent orchestration tools, safety auditing, and cross-agent integrations. This README also notes that the autonomous GitHub PR delivery path was exercised in a documentation-only test.
+A collection of [Pi Coding Agent](https://github.com/mariozechner/pi-coding-agent) customized instances. _Why?_ To showcase what it looks like to hedge against the leader in the agentic coding market, Claude Code. Here we showcase how you can customize the UI, agent orchestration tools, safety auditing, and cross-agent integrations. This README also notes that the autonomous GitHub PR delivery path was exercised in a docs-only test.
 
 <div align="center">
   <img src="./images/pi-logo.png" alt="pi-vs-cc" width="700">
@@ -76,7 +76,9 @@ For Minions autonomous repository execution, Pi is now the intended runtime path
 - Set `MINIONS_EXECUTION_MODE=agent-runner` to enable autonomous runner mode.
 - `.env.sample` now defaults to `agent-runner` because Pi RPC is the intended autonomous execution path.
 - Minions will spawn `pi --mode rpc` headlessly for analysis and execution.
-- Configure the runtime with `MINIONS_PI_COMMAND`, `MINIONS_PI_PROVIDER`, `MINIONS_PI_MODEL`, `MINIONS_PI_SESSION_DIR`, and `MINIONS_PI_ARGS`.
+- Configure the runtime with `MINIONS_PI_COMMAND`, `MINIONS_PI_PROVIDER`, `MINIONS_PI_MODEL`, `MINIONS_PI_SESSION_DIR`, `MINIONS_PI_ARGS`, and optional isolation toggles `MINIONS_PI_DISABLE_RESOURCE_DISCOVERY`, `MINIONS_PI_ISOLATE_AGENT_DIR`, `MINIONS_PI_AGENT_DIR`.
+- For Pi/OpenAI Codex subscription auth, set `MINIONS_PI_PROVIDER=openai-codex` or `openai-chatgpt-subscription` and use the in-app “Connect ChatGPT” flow. Legacy `codex` is also accepted. Minions bootstraps the real installed Pi runtime against the shared `PI_CODING_AGENT_DIR` for real Pi `/login` bootstrap/detection, then for headless RPC explicitly passes `--provider openai-codex`. When runtime isolation is enabled, Minions seeds the isolated `PI_CODING_AGENT_DIR` with only the copied auth artifacts so ambient Pi resources stay out of autonomous runs.
+- By default, Minions launches headless Pi RPC with no interactive resource discovery (`--no-extensions --no-skills --no-prompt-templates --no-themes`) and an isolated `PI_CODING_AGENT_DIR` so repo/global Pi customizations do not interfere with autonomous runs.
 - `src/server.js` still defaults to `simulated` when env is unset, intentionally, to avoid surprising autonomous execution for contributors who start the app without configuring a runtime.
 - See `docs/minions-pi-runner.md` for runner details and tagged JSON output contracts.
 

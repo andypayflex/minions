@@ -58,7 +58,16 @@ const FINAL_RESPONSE_SCHEMA = {
 const RUNNER_PROVIDER = "pi-rpc";
 const ANALYSIS_TAG = "MINIONS_ANALYSIS_RESULT";
 const EXECUTION_TAG = "MINIONS_EXECUTION_RESULT";
-const UNSUPPORTED_PI_PROVIDER_VALUES = new Set(["codex"]);
+const SUBSCRIPTION_PI_PROVIDER_ALIASES = new Set([
+  "openai-chatgpt-subscription",
+  "openai-codex",
+  "codex",
+]);
+const SUBSCRIPTION_CODEX_MODEL_PATTERNS = [/\bcodex\b/i, /^gpt-5(?:\.|-|$)/i, /^o3(?:\.|-|$)/i];
+const SAFE_NO_DISCOVERY_ARGS = ["--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"];
+const DEFAULT_ISOLATED_PI_DIR_BASENAME = "pi-agent-home";
+const DEFAULT_SUBSCRIPTION_SHARED_AGENT_DIR = path.join(os.homedir(), ".minions", "pi-subscription-auth");
+const AUTH_ARTIFACT_FILENAMES = ["auth.json", "oauth.json"];
 
 function formatList(items, fallback = "none") {
   if (!Array.isArray(items) || items.length === 0) {
@@ -269,21 +278,57 @@ function normalizePiProvider(provider) {
     return null;
   }
 
-  if (UNSUPPORTED_PI_PROVIDER_VALUES.has(value.toLowerCase())) {
+  if (isSubscriptionProvider(value)) {
     return null;
   }
 
   return value;
 }
 
+function hasCliArg(args, flag) {
+  return Array.isArray(args) && args.includes(flag);
+}
+
+function isSubscriptionProvider(provider) {
+  return SUBSCRIPTION_PI_PROVIDER_ALIASES.has(String(provider || "").trim().toLowerCase());
+}
+
+function shouldForceCodexModel(provider, model) {
+  if (!isSubscriptionProvider(provider)) {
+    return false;
+  }
+
+  const value = String(model || "").trim();
+  if (!value) {
+    return true;
+  }
+
+  return SUBSCRIPTION_CODEX_MODEL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+async function ensureDirectory(directoryPath) {
+  if (!directoryPath) {
+    return null;
+  }
+
+  await fs.mkdir(directoryPath, { recursive: true });
+  return directoryPath;
+}
+
 export class PiRpcRunner {
   constructor(options = {}) {
     this.command = options.command || "pi";
+    this.originalProvider = options.provider || null;
     this.provider = normalizePiProvider(options.provider);
     this.model = options.model || null;
     this.modelProvider = options.modelProvider || this.provider || null;
     this.sessionDir = options.sessionDir || null;
     this.extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
+    this.disableResourceDiscovery = options.disableResourceDiscovery !== false;
+    this.useIsolatedAgentDir = options.useIsolatedAgentDir !== false;
+    this.isolatedAgentDir = options.isolatedAgentDir || null;
+    this.subscriptionSharedAgentDir = options.subscriptionSharedAgentDir || process.env.MINIONS_PI_SUBSCRIPTION_AGENT_DIR || DEFAULT_SUBSCRIPTION_SHARED_AGENT_DIR;
+    this.subscriptionAuthEnabled = options.subscriptionAuthEnabled !== false;
     this.env = options.env || process.env;
     this.spawnImpl = options.spawnImpl || spawn;
     this.analysisResponseSchema = options.analysisResponseSchema || ANALYSIS_RESPONSE_SCHEMA;
@@ -292,6 +337,19 @@ export class PiRpcRunner {
 
   _buildArgs(packet) {
     const args = ["--mode", "rpc", "--no-session"];
+    const forceCodexPath = shouldForceCodexModel(this.originalProvider, this.model);
+
+    if (forceCodexPath && !hasCliArg(this.extraArgs, "--provider") && !hasCliArg(this.extraArgs, "--model-provider")) {
+      args.push("--provider", "openai-codex");
+    }
+
+    if (this.disableResourceDiscovery) {
+      for (const flag of SAFE_NO_DISCOVERY_ARGS) {
+        if (!hasCliArg(args, flag) && !hasCliArg(this.extraArgs, flag)) {
+          args.push(flag);
+        }
+      }
+    }
 
     if (this.provider) {
       args.push("--provider", this.provider);
@@ -315,6 +373,17 @@ export class PiRpcRunner {
     }
 
     const args = this._buildArgs(packet);
+    const env = { ...this.env };
+
+    if (this.subscriptionAuthEnabled && isSubscriptionProvider(this.originalProvider)) {
+      env.PI_CODING_AGENT_DIR = await ensureDirectory(this.subscriptionSharedAgentDir);
+    } else if (this.useIsolatedAgentDir) {
+      const resolvedAgentDir = await ensureDirectory(
+        this.isolatedAgentDir || path.join(os.tmpdir(), "minions", DEFAULT_ISOLATED_PI_DIR_BASENAME),
+      );
+      env.PI_CODING_AGENT_DIR = resolvedAgentDir;
+    }
+
     let stdout = "";
     let stderr = "";
     let assistantText = "";
@@ -324,7 +393,7 @@ export class PiRpcRunner {
 
     const child = this.spawnImpl(this.command, args, {
       cwd: packet.repository.repositoryPath,
-      env: this.env,
+      env,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -466,9 +535,14 @@ export function createExecutionRunnerFromEnv(overrides = {}) {
   const configuredProvider = overrides.provider ?? process.env.MINIONS_PI_PROVIDER ?? null;
   const normalizedProvider = normalizePiProvider(configuredProvider);
 
+  const disableResourceDiscovery =
+    overrides.disableResourceDiscovery ?? process.env.MINIONS_PI_DISABLE_RESOURCE_DISCOVERY !== "false";
+  const useIsolatedAgentDir = overrides.useIsolatedAgentDir ?? process.env.MINIONS_PI_ISOLATE_AGENT_DIR !== "false";
+  const isolatedAgentDir = overrides.isolatedAgentDir || process.env.MINIONS_PI_AGENT_DIR || null;
+
   return new PiRpcRunner({
     command: overrides.command || process.env.MINIONS_PI_COMMAND || "pi",
-    provider: normalizedProvider,
+    provider: configuredProvider,
     modelProvider: overrides.modelProvider || normalizedProvider,
     model: overrides.model || process.env.MINIONS_PI_MODEL || null,
     sessionDir: overrides.sessionDir || process.env.MINIONS_PI_SESSION_DIR || null,
@@ -480,6 +554,10 @@ export function createExecutionRunnerFromEnv(overrides = {}) {
             .map((item) => item.trim())
             .filter(Boolean)
         : []),
+    disableResourceDiscovery,
+    useIsolatedAgentDir,
+    isolatedAgentDir,
+    subscriptionSharedAgentDir: overrides.subscriptionSharedAgentDir || process.env.MINIONS_PI_SUBSCRIPTION_AGENT_DIR || null,
     spawnImpl: overrides.spawnImpl,
     env: overrides.env,
   });

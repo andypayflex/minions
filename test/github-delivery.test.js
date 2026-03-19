@@ -7,6 +7,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 
 import { GitHubCliDeliveryRunner } from "../src/github-delivery.js";
+import { readCurrentBranch } from "../src/local-git.js";
 import { MinionsPlatform } from "../src/minions.js";
 import { createGitHubPrPreflightFromEnv } from "../src/preflight.js";
 
@@ -221,6 +222,8 @@ test("platform github-pr delivery publishes a PR through the configured prefligh
     const runRepositoryPath = startup.environment.repositoryPath;
     assert.deepEqual(preflightCalls, ["run-start"]);
     assert.notEqual(runRepositoryPath, repositoryPath);
+    assert.equal(await readCurrentBranch(repositoryPath), "main");
+    assert.equal(await readCurrentBranch(runRepositoryPath), `minions/${taskId}`);
     await fs.writeFile(path.join(runRepositoryPath, "src", "feature.js"), "export const feature = () => 'after';\n");
     assert.equal(
       platform.executeRepositoryChanges(runId, {
