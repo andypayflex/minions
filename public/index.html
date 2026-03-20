@@ -9,16 +9,32 @@
   <body>
     <div class="backdrop"></div>
     <main class="shell">
-      <section class="hero hero-compact">
-        <div class="hero-copy">
+      <header class="topbar">
+        <div class="brand-lockup">
           <p class="eyebrow">Autonomous Delivery Prototype</p>
-          <h1>Minions Control Room</h1>
+          <div>
+            <h1 class="brand-title">Minions Control Room</h1>
+            <p class="brand-subtitle">A more polished command surface for task intake, live execution tracking, and delivery inspection.</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span class="topbar-pill">Frontend control surface</span>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="section-kicker">Control Room Overview</p>
+          <h2>Move from task intake to autonomous execution with clearer focus and less friction.</h2>
           <p class="lede">
-            Move from task intake to autonomous execution, monitor live runs, and keep the inspector focused on the details that matter.
+            Launch work, monitor active runs, inspect structured results, and keep operator context visible in a single contemporary workspace.
           </p>
         </div>
         <div class="hero-meta">
-          <p id="runtime-mode-note" class="caption"></p>
+          <div class="hero-note-card">
+            <p class="caption-label">Runtime</p>
+            <p id="runtime-mode-note" class="caption"></p>
+          </div>
           <div class="hero-stats" id="hero-stats"></div>
         </div>
       </section>
@@ -35,33 +51,33 @@
               <button id="pi-auth-login">Connect ChatGPT</button>
             </div>
           </div>
-          <p class="panel-intro">Authenticate once from the app using your ChatGPT subscription so future Pi executions can reuse the shared authenticated runtime instead of requiring API Platform keys.</p>
+          <p class="panel-intro">Authenticate once from the app so future Pi executions can reuse the shared authenticated runtime instead of requiring separate API Platform keys.</p>
           <div id="pi-auth-status" class="result-panel muted">Checking Pi auth status…</div>
         </article>
       </section>
 
-      <section class="grid">
+      <section class="workspace-grid">
         <section class="monitoring-grid">
           <article class="panel monitoring-panel">
             <div class="panel-head panel-head-tight">
               <div>
                 <p class="section-kicker">Monitor</p>
-                <h2>Tasks</h2>
+                <h2>Task Queue</h2>
               </div>
               <span class="caption">Inspect a task or launch the full autonomous flow.</span>
             </div>
-            <div id="task-list" class="stack"></div>
+            <div id="task-list" class="stack card-stack"></div>
           </article>
 
           <article class="panel monitoring-panel">
             <div class="panel-head panel-head-tight">
               <div>
                 <p class="section-kicker">Monitor</p>
-                <h2>Runs</h2>
+                <h2>Run Timeline</h2>
               </div>
               <span class="caption">Track live status, history, structured output, and operator actions.</span>
             </div>
-            <div id="run-list" class="stack"></div>
+            <div id="run-list" class="stack card-stack"></div>
           </article>
         </section>
 
@@ -69,7 +85,7 @@
           <article class="panel intake-panel intake-panel-primary">
             <div class="panel-head panel-head-tight">
               <div>
-                <p class="section-kicker">Task Intake</p>
+                <p class="section-kicker">Primary Intake</p>
                 <h2>Create Task</h2>
               </div>
               <button id="refresh-button" class="ghost-button">Refresh</button>
@@ -138,10 +154,14 @@ avoid docs-only edits</textarea>
           </article>
 
           <article class="panel detail-panel">
-            <div class="panel-head">
-              <h2>Inspector</h2>
+            <div class="panel-head panel-head-tight">
+              <div>
+                <p class="section-kicker">Operator Console</p>
+                <h2>Inspector</h2>
+              </div>
               <button id="show-health" class="ghost-button">Health</button>
             </div>
+            <p class="panel-intro panel-intro-secondary">Review live API output, structured reports, validation details, and any operator-facing failure context.</p>
             <div id="inspector" class="result-panel result-panel-primary">Select an action to inspect live API output.</div>
           </article>
         </aside>

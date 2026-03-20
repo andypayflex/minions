@@ -21,7 +21,7 @@ let activePiAuthJobId = null;
 let piAuthPollTimer = null;
 
 runtimeModeNote.textContent =
-  "Runtime mode: autonomous runner execution with github-pr delivery, so successful runs can open a real GitHub pull request.";
+  "Autonomous runner execution with github-pr delivery enabled, so successful runs can open a real GitHub pull request.";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -495,6 +495,190 @@ function showRunProgress(run) {
   );
 }
 
+function truncate(value, limit = 132) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function createTag(label, tone = "neutral") {
+  const pill = document.createElement("span");
+  pill.className = `meta-pill meta-pill-${tone}`;
+  pill.textContent = label;
+  return pill;
+}
+
+function createMetric(label, value) {
+  const item = document.createElement("div");
+  item.className = "card-metric";
+
+  const metricLabel = document.createElement("span");
+  metricLabel.className = "card-metric-label";
+  metricLabel.textContent = label;
+
+  const metricValue = document.createElement("strong");
+  metricValue.className = "card-metric-value";
+  metricValue.textContent = value;
+
+  item.append(metricLabel, metricValue);
+  return item;
+}
+
+function outcomeTone(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (["successful", "ready", "completed", "ok"].includes(normalized)) {
+    return "success";
+  }
+  if (["failed", "blocked", "interrupted", "boundary-stopped"].includes(normalized)) {
+    return "danger";
+  }
+  if (["partial", "warning"].includes(normalized)) {
+    return "warning";
+  }
+  if (["running", "queued", "in progress", "launching full autonomous flow"].includes(normalized)) {
+    return "info";
+  }
+  return "neutral";
+}
+
+function card({ eyebrow, title, summary, pills = [], metrics = [], actions = [] }) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "item-card";
+
+  const header = document.createElement("div");
+  header.className = "item-card-head";
+
+  if (eyebrow) {
+    const eyebrowElement = document.createElement("p");
+    eyebrowElement.className = "item-card-eyebrow";
+    eyebrowElement.textContent = eyebrow;
+    header.append(eyebrowElement);
+  }
+
+  const titleElement = document.createElement("h3");
+  titleElement.textContent = title;
+  header.append(titleElement);
+
+  if (summary) {
+    const summaryElement = document.createElement("p");
+    summaryElement.className = "item-card-summary";
+    summaryElement.textContent = summary;
+    header.append(summaryElement);
+  }
+
+  wrapper.append(header);
+
+  if (pills.length > 0) {
+    const pillRow = document.createElement("div");
+    pillRow.className = "meta-pill-row";
+    pills.forEach((pill) => pillRow.append(pill));
+    wrapper.append(pillRow);
+  }
+
+  if (metrics.length > 0) {
+    const metricGrid = document.createElement("div");
+    metricGrid.className = "card-metrics";
+    metrics.forEach((metric) => metricGrid.append(metric));
+    wrapper.append(metricGrid);
+  }
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "item-actions";
+  actions.forEach((action) => actionRow.append(action));
+  wrapper.append(actionRow);
+
+  return wrapper;
+}
+
+function actionButton(label, handler, kind = "default") {
+  const button = document.createElement("button");
+  button.textContent = label;
+  if (kind === "ghost") {
+    button.className = "ghost-button";
+  }
+  if (kind === "subtle") {
+    button.className = "subtle-button";
+  }
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function emptyState(eyebrow, title, message, hint, options = {}) {
+  const { variant = "default", bullets = [], accent = "•" } = options;
+  const wrapper = document.createElement("section");
+  wrapper.className = `empty-state empty-state-${variant}`;
+  const bulletMarkup = bullets.length
+    ? `
+      <ul class="empty-state-list">
+        ${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}
+      </ul>
+    `
+    : "";
+  wrapper.innerHTML = `
+    <div class="empty-state-mark" aria-hidden="true">
+      <span>${escapeHtml(accent)}</span>
+    </div>
+    <div class="empty-state-copy">
+      <p class="empty-state-eyebrow">${escapeHtml(eyebrow)}</p>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(message)}</p>
+      ${bulletMarkup}
+      <p class="empty-state-hint">${escapeHtml(hint)}</p>
+    </div>
+  `;
+  return wrapper;
+}
+
+async function refreshPiAuthStatus() {
+  try {
+    const payload = await api("/api/pi/auth/status");
+    showJson(piAuthStatus, payload, { title: "Pi subscription auth" });
+    piAuthLoginButton.disabled = Boolean(payload?.auth?.authenticated);
+    piAuthLoginButton.textContent = payload?.auth?.authenticated ? "Connected" : "Connect ChatGPT";
+    return payload;
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Pi auth unavailable" });
+    return null;
+  }
+}
+
+async function pollPiAuthJob(jobId) {
+  try {
+    const payload = await api(`/api/pi/auth/jobs/${jobId}`);
+    showJson(piAuthStatus, payload, { title: "Pi auth progress" });
+    if (payload?.job?.state === "completed" || payload?.auth?.authenticated) {
+      activePiAuthJobId = null;
+      stopPiAuthPolling();
+      await refreshPiAuthStatus();
+      return;
+    }
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Pi auth progress unavailable" });
+    activePiAuthJobId = null;
+    stopPiAuthPolling();
+    return;
+  }
+
+  piAuthPollTimer = window.setTimeout(() => {
+    void pollPiAuthJob(jobId);
+  }, 1500);
+}
+
+async function startPiAuthLogin() {
+  try {
+    const payload = await api("/api/pi/auth/login", { method: "POST" });
+    activePiAuthJobId = payload.job.jobId;
+    showJson(piAuthStatus, payload, { title: "Pi auth started" });
+    window.open(payload.job.loginUrl, "pi-subscription-auth", "popup,width=900,height=780");
+    stopPiAuthPolling();
+    void pollPiAuthJob(activePiAuthJobId);
+  } catch (error) {
+    showError(piAuthStatus, error, { title: "Unable to start Pi auth" });
+  }
+}
+
 async function pollRun(runId) {
   try {
     const payload = await api(`/api/runs/${runId}`);
@@ -573,124 +757,33 @@ async function watchTaskForRun(taskId) {
   taskRunWatchers.set(taskId, timeoutId);
 }
 
-function card(title, meta, buttons = []) {
-  const wrapper = document.createElement("section");
-  wrapper.className = "item-card";
-
-  const header = document.createElement("div");
-  header.className = "item-card-head";
-  header.innerHTML = `<h3>${title}</h3><p>${meta}</p>`;
-  wrapper.append(header);
-
-  const actions = document.createElement("div");
-  actions.className = "item-actions";
-  for (const button of buttons) {
-    actions.append(button);
-  }
-  wrapper.append(actions);
-  return wrapper;
-}
-
-function actionButton(label, handler, kind = "default") {
-  const button = document.createElement("button");
-  button.textContent = label;
-  if (kind === "ghost") {
-    button.className = "ghost-button";
-  }
-  button.addEventListener("click", handler);
-  return button;
-}
-
-function emptyState(eyebrow, title, message, hint, options = {}) {
-  const { variant = "default", bullets = [], accent = "•" } = options;
-  const wrapper = document.createElement("section");
-  wrapper.className = `empty-state empty-state-${variant}`;
-  const bulletMarkup = bullets.length
-    ? `
-      <ul class="empty-state-list">
-        ${bullets.map((bullet) => `<li>${bullet}</li>`).join("")}
-      </ul>
-    `
-    : "";
-  wrapper.innerHTML = `
-    <div class="empty-state-mark" aria-hidden="true">
-      <span>${accent}</span>
-    </div>
-    <div class="empty-state-copy">
-      <p class="empty-state-eyebrow">${eyebrow}</p>
-      <h3>${title}</h3>
-      <p>${message}</p>
-      ${bulletMarkup}
-      <p class="empty-state-hint">${hint}</p>
-    </div>
-  `;
-  return wrapper;
-}
-
-async function refreshPiAuthStatus() {
-  try {
-    const payload = await api("/api/pi/auth/status");
-    showJson(piAuthStatus, payload, { title: "Pi subscription auth" });
-    piAuthLoginButton.disabled = Boolean(payload?.auth?.authenticated);
-    piAuthLoginButton.textContent = payload?.auth?.authenticated ? "Connected" : "Connect ChatGPT";
-    return payload;
-  } catch (error) {
-    showError(piAuthStatus, error, { title: "Pi auth unavailable" });
-    return null;
-  }
-}
-
-async function pollPiAuthJob(jobId) {
-  try {
-    const payload = await api(`/api/pi/auth/jobs/${jobId}`);
-    showJson(piAuthStatus, payload, { title: "Pi auth progress" });
-    if (payload?.job?.state === "completed" || payload?.auth?.authenticated) {
-      activePiAuthJobId = null;
-      stopPiAuthPolling();
-      await refreshPiAuthStatus();
-      return;
-    }
-  } catch (error) {
-    showError(piAuthStatus, error, { title: "Pi auth progress unavailable" });
-    activePiAuthJobId = null;
-    stopPiAuthPolling();
-    return;
-  }
-
-  piAuthPollTimer = window.setTimeout(() => {
-    void pollPiAuthJob(jobId);
-  }, 1500);
-}
-
-async function startPiAuthLogin() {
-  try {
-    const payload = await api("/api/pi/auth/login", { method: "POST" });
-    activePiAuthJobId = payload.job.jobId;
-    showJson(piAuthStatus, payload, { title: "Pi auth started" });
-    window.open(payload.job.loginUrl, "pi-subscription-auth", "popup,width=900,height=780");
-    stopPiAuthPolling();
-    void pollPiAuthJob(activePiAuthJobId);
-  } catch (error) {
-    showError(piAuthStatus, error, { title: "Unable to start Pi auth" });
-  }
-}
-
 async function refreshDashboard() {
-  const [taskPayload, runPayload, repositoryPayload] = await Promise.all([
-    api("/api/tasks"),
-    api("/api/runs"),
-    api("/api/repositories"),
-  ]);
-  const activeRunIdsByTask = new Map(
-    runPayload.runs
-      .filter((run) => !TERMINAL_STATES.has(run.currentOutcomeState))
-      .map((run) => [run.taskRequestId, run.id]),
-  );
+  const [taskPayload, runPayload, repositoryPayload] = await Promise.all([api("/api/tasks"), api("/api/runs"), api("/api/repositories")]);
+  const activeRuns = runPayload.runs.filter((run) => !TERMINAL_STATES.has(run.currentOutcomeState));
+  const activeRunIdsByTask = new Map(activeRuns.map((run) => [run.taskRequestId, run.id]));
+  const completedRuns = runPayload.runs.length - activeRuns.length;
 
   heroStats.innerHTML = `
-    <div class="stat"><strong>${taskPayload.tasks.length}</strong><span>Tasks</span></div>
-    <div class="stat"><strong>${runPayload.runs.length}</strong><span>Runs</span></div>
-    <div class="stat"><strong>${repositoryPayload.repositories.length}</strong><span>Repos</span></div>
+    <article class="overview-stat-card">
+      <p class="overview-stat-label">Task Queue</p>
+      <strong>${taskPayload.tasks.length}</strong>
+      <span>${taskPayload.tasks.length === 1 ? "task ready" : "tasks ready"}</span>
+    </article>
+    <article class="overview-stat-card overview-stat-card-highlight">
+      <p class="overview-stat-label">Live Runs</p>
+      <strong>${activeRuns.length}</strong>
+      <span>${activeRuns.length === 0 ? "waiting to launch" : activeRuns.length === 1 ? "run in flight" : "runs in flight"}</span>
+    </article>
+    <article class="overview-stat-card">
+      <p class="overview-stat-label">Run History</p>
+      <strong>${completedRuns}</strong>
+      <span>${completedRuns === 1 ? "completed record" : "completed records"}</span>
+    </article>
+    <article class="overview-stat-card">
+      <p class="overview-stat-label">Repositories</p>
+      <strong>${repositoryPayload.repositories.length}</strong>
+      <span>available targets</span>
+    </article>
   `;
 
   taskList.replaceChildren();
@@ -718,7 +811,8 @@ async function refreshDashboard() {
     const inspect = actionButton("Inspect", async () => {
       followedRunId = null;
       showJson(inspector, await api(`/api/tasks/${task.id}`), { title: `Task ${task.id}` });
-    });
+    }, "subtle");
+
     const activeRunId = activeRunIdsByTask.get(task.id);
     const run = actionButton(activeRunId || pendingTaskRuns.has(task.id) ? "Run In Progress" : "Run Full Flow", async () => {
       if (pendingTaskRuns.has(task.id) || activeRunIdsByTask.has(task.id)) {
@@ -757,7 +851,33 @@ async function refreshDashboard() {
       }
     });
     run.disabled = pendingTaskRuns.has(task.id) || Boolean(activeRunId);
-    taskList.append(card(task.title, `${task.id} · ${task.status}`, [inspect, run]));
+
+    const summary = truncate(task.objective || task.expectedOutcome || "Task ready for execution.");
+    const pills = [
+      createTag(task.id, "neutral"),
+      createTag(task.status || "unknown", outcomeTone(task.status)),
+      createTag(task.repository || "No repository", "info"),
+    ];
+    if (activeRunId) {
+      pills.push(createTag(`Live ${activeRunId}`, "info"));
+    }
+    if (pendingTaskRuns.has(task.id)) {
+      pills.push(createTag("Launching", "info"));
+    }
+
+    taskList.append(
+      card({
+        eyebrow: "Task",
+        title: task.title,
+        summary,
+        pills,
+        metrics: [
+          createMetric("Expected Outcome", truncate(task.expectedOutcome || "Not specified", 80)),
+          createMetric("Constraints", truncate(task.constraints || "No constraints supplied", 80)),
+        ],
+        actions: [inspect, run],
+      }),
+    );
   }
 
   runList.replaceChildren();
@@ -789,11 +909,11 @@ async function refreshDashboard() {
     const inspect = actionButton("Inspect", async () => {
       followedRunId = null;
       showJson(inspector, await api(`/api/runs/${run.id}`), { title: `Run ${run.id}` });
-    });
+    }, "subtle");
     const history = actionButton("History", async () => {
       followedRunId = null;
       showJson(inspector, await api(`/api/runs/${run.id}/history`), { title: `Run ${run.id} history`, rawLabel: "Run history payload" });
-    });
+    }, "subtle");
     const status = actionButton("Status", async () => {
       try {
         if (TERMINAL_STATES.has(run.currentOutcomeState)) {
@@ -831,12 +951,28 @@ async function refreshDashboard() {
       }
     }, "ghost");
 
+    const summary = truncate(run?.completion?.summary || run?.execution?.summary || `Tracking ${run.currentStage || "current stage"}.`);
+    const pills = [
+      createTag(run.id, "neutral"),
+      createTag(run.currentOutcomeState || "unknown", outcomeTone(run.currentOutcomeState)),
+      createTag(run.currentStage || "stage unknown", "info"),
+    ];
+    if (run.pullRequestId) {
+      pills.push(createTag(run.pullRequestId, "success"));
+    }
+
     runList.append(
-      card(
-        `${run.id}`,
-        `${run.currentStage} · ${run.currentOutcomeState}${run.pullRequestId ? ` · ${run.pullRequestId}` : ""}`,
-        [inspect, history, status, structured, pause],
-      ),
+      card({
+        eyebrow: "Run",
+        title: run.taskRequestId || run.id,
+        summary,
+        pills,
+        metrics: [
+          createMetric("Stage", run.currentStage || "Unknown"),
+          createMetric("Delivery", run.pullRequestId || "No PR yet"),
+        ],
+        actions: [inspect, history, status, structured, pause],
+      }),
     );
   }
 }
